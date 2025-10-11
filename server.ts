@@ -1,0 +1,494 @@
+require('dotenv').config();
+import express from 'express';
+const mongoose = require('mongoose');
+const cors = require('cors');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
+const chalk = require('chalk');
+const redis = require('redis');
+const { promisify } = require('util');
+const os = require('os');
+const dns = require('dns').promises;
+const { verifySmtp } = require('./config/mailer');
+
+// Import routes
+const authRoutes = require('./routes/auth');
+const userRoutes = require('./routes/users');
+const serviceRoutes = require('./routes/services');
+const bookingRoutes = require('./routes/bookings');
+const paymentRoutes = require('./routes/payments');
+const notificationRoutes = require('./routes/notifications');
+const activityRoutes = require('./routes/activities');
+const uploadRoutes = require('./routes/upload');
+const workflowRoutes = require('./routes/workflows');
+
+// Initialize Express app
+const app = express();
+
+// Optional monitoring setup (wrapped so it won't crash if prom-client not available)
+try {
+  const setupMonitoring = require('./monitoring');
+  if (typeof setupMonitoring === 'function') setupMonitoring(app);
+} catch (e) {
+  // ignore if monitoring is not configured
+}
+
+// Initialize Redis client (optional)
+const USE_REDIS = String(process.env.USE_REDIS || '').toLowerCase() === 'true';
+const redisClient = USE_REDIS ? redis.createClient({
+  host: process.env.REDIS_HOST || 'localhost',
+  port: process.env.REDIS_PORT || 6379,
+  password: process.env.REDIS_PASSWORD || undefined
+}) : null;
+
+// Promisify Redis methods (guard when disabled)
+const redisGet = redisClient ? promisify(redisClient.get).bind(redisClient) : async () => null;
+const redisSet = redisClient ? promisify(redisClient.set).bind(redisClient) : async () => {};
+const redisDel = redisClient ? promisify(redisClient.del).bind(redisClient) : async () => {};
+const redisExists = redisClient ? promisify(redisClient.exists).bind(redisClient) : async () => 0;
+
+// Redis connection event handlers (only if enabled)
+if (redisClient) {
+  redisClient.on('connect', () => {
+    console.log(chalk.yellow('🔗  Redis client connected'));
+  });
+  redisClient.on('ready', () => {
+    console.log(chalk.green('✅  Redis client ready'));
+  });
+  redisClient.on('error', (err: any) => {
+    console.error(chalk.red('❌  Redis client error:'), err);
+  });
+  redisClient.on('end', () => {
+    console.log(chalk.yellow('⚠️   Redis client disconnected'));
+  });
+}
+
+// Initialize Socket.io
+const initSocket = (server: any) => {
+  const socketIo = require('socket.io');
+  const io = socketIo(server, {
+    cors: {
+      origin: process.env.CLIENT_URL,
+      methods: ['GET', 'POST']
+    }
+  });
+
+  io.use((socket: any, next: any) => {
+    // Authenticate socket connections using JWT from handshake.auth.token
+    const token = socket.handshake.auth && socket.handshake.auth.token;
+    if (!token) return next();
+    try {
+      const jwt = require('jsonwebtoken');
+      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      socket.userId = decoded.id;
+      socket.userRole = decoded.role || null;
+      // join personal room
+      if (socket.userId) socket.join(socket.userId);
+      next();
+    } catch (err) {
+      console.warn('Socket auth failed:', err && err.message);
+      // allow connection but unauthenticated (or you can reject: return next(new Error('Unauthorized')))
+      next();
+    }
+  });
+
+  io.on('connection', (socket: any) => {
+    // Ensure every socket has an effective user id (fallback to socket.id for unauthenticated connections)
+    socket.userId = socket.userId || socket.id;
+    console.log(chalk.cyan(`🔌  User connected: ${socket.id} (userId=${socket.userId})`));
+    // Join user to their room for private messages
+    socket.join(socket.userId);
+    // Join booking room for real-time tracking/chat
+    socket.on('join-booking', ({ bookingId }: any) => {
+      if (bookingId) {
+        socket.join(`booking:${bookingId}`);
+      }
+    });
+
+    // Chat messages within booking room
+    socket.on('booking-chat', ({ bookingId, message }: any) => {
+      if (bookingId && message) {
+        // persist chat message asynchronously
+        try {
+          const Message = require('./models/Message');
+          Message.create({ bookingId, fromUser: socket.userId || null, message, toUser: null, createdAt: new Date() }).catch(() => {});
+        } catch (_) {}
+        io.to(`booking:${bookingId}`).emit('booking-chat', { from: socket.userId, message, ts: Date.now() });
+      }
+    });
+
+    // Generic chat message (user-to-user)
+    socket.on('chat-message', ({ toUserId, message }: any) => {
+      if (!toUserId || !message) return;
+      try {
+        const Message = require('./models/Message');
+        Message.create({ bookingId: null, fromUser: socket.userId || null, message, toUser: toUserId, createdAt: new Date() }).catch(() => {});
+      } catch (_) {}
+      io.to(toUserId).emit('chat-message', { from: socket.userId, message, ts: Date.now() });
+    });
+
+    // Live location updates broadcast
+    socket.on('booking-location', ({ bookingId, role, coordinates }: any) => {
+      if (bookingId && Array.isArray(coordinates)) {
+        io.to(`booking:${bookingId}`).emit('booking-location', { role, coordinates, ts: Date.now() });
+      }
+    });
+
+    socket.on('booking-request', (data: any) => {
+      console.log(chalk.blue(`📨  Booking request received: ${JSON.stringify(data)}`));
+      // Handle real-time booking requests
+      socket.to(data.providerId).emit('new-booking', data);
+    });
+    
+    // Call signaling events for WebRTC (offer/answer/ice)
+    socket.on('call-offer', ({ toUserId, offer, bookingId }: any) => {
+      if (!toUserId || !offer) return;
+      io.to(toUserId).emit('call-offer', { from: socket.userId, offer, bookingId });
+    });
+
+    socket.on('call-answer', ({ toUserId, answer, bookingId }: any) => {
+      if (!toUserId || !answer) return;
+      io.to(toUserId).emit('call-answer', { from: socket.userId, answer, bookingId });
+    });
+
+    socket.on('call-ice', ({ toUserId, candidate }: any) => {
+      if (!toUserId || !candidate) return;
+      io.to(toUserId).emit('call-ice', { from: socket.userId, candidate });
+    });
+    
+    socket.on('disconnect', () => {
+      console.log(chalk.yellow(`🔌  User disconnected: ${socket.id}`));
+    });
+  });
+
+  return io;
+};
+
+// Security middleware
+app.use(helmet());
+app.use(cors({
+  origin: process.env.CLIENT_URL,
+  credentials: true
+}));
+
+// Custom Redis store for rate limiting
+const RedisStore = require('rate-limit-redis');
+// Rate limiting with Redis store (disabled by default)
+// const limiter = rateLimit({
+//   windowMs: 15 * 60 * 1000,
+//   max: parseInt(process.env.RATE_LIMIT_MAX) || 100,
+//   message: 'Too many requests from this IP, please try again later.',
+//   // Using Redis for rate limiting storage
+//   store: new RedisStore({
+//     client: redisClient,
+//     expiry: 15 * 60 // 15 minutes in seconds
+//   })
+// });
+// app.use(limiter);
+
+// Custom logging middleware with cache info
+app.use((req: any, res: any, next: any) => {
+  const start = Date.now();
+  
+  res.on('finish', () => {
+    const duration = Date.now() - start;
+    const statusColor = res.statusCode >= 400 ? chalk.red : chalk.green;
+    const methodColor = 
+      req.method === 'GET' ? chalk.blue :
+      req.method === 'POST' ? chalk.green :
+      req.method === 'PUT' ? chalk.yellow :
+      req.method === 'DELETE' ? chalk.red : chalk.white;
+    
+    const fromCache = res.get('X-Cache') === 'HIT';
+    const cacheIndicator = fromCache ? chalk.magenta('[CACHE]') : '';
+    
+    console.log(
+      chalk.gray(new Date().toISOString()),
+      methodColor(req.method.padEnd(7)),
+      statusColor(res.statusCode),
+      chalk.white(req.originalUrl),
+      chalk.gray(`${duration}ms`),
+      cacheIndicator
+    );
+  });
+  
+  next();
+});
+
+// Body parsing middleware
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true }));
+
+// Database connection: only connect when running the server directly
+if (require.main === module) {
+  mongoose.connect(process.env.MONGODB_URI || '', {
+    useNewUrlParser: true,
+    useUnifiedTopology: true,
+    serverSelectionTimeoutMS: 5000,
+    socketTimeoutMS: 45000,
+  } as any)
+  .then(() => {
+    console.log(chalk.green('✅  MongoDB connected successfully'));
+  })
+  .catch((err: any) => {
+    console.error(chalk.red('❌  MongoDB connection error:'), err);
+    // don't exit here in case we run in test environment
+  });
+
+  // MongoDB connection event handlers
+  mongoose.connection.on('connected', () => {
+    console.log(chalk.cyan('📊  Mongoose connected to MongoDB'));
+  });
+
+  mongoose.connection.on('error', (err: any) => {
+    console.error(chalk.red('❌  Mongoose connection error:'), err);
+  });
+
+  mongoose.connection.on('disconnected', () => {
+    console.log(chalk.yellow('⚠️   Mongoose disconnected from MongoDB'));
+  });
+}
+
+// Add caching middleware for GET requests using cache abstraction or Redis if enabled
+const { get: cacheGet, set: cacheSet } = require('./cache');
+app.use('/services', async (req: any, res: any, next: any) => {
+  if (req.method !== 'GET') return next();
+  try {
+    const cacheKey = `services:${req.originalUrl}`;
+    const cachedData = await cacheGet(cacheKey);
+    if (cachedData) {
+      console.log(chalk.magenta(`💾  Serving from cache: ${cacheKey}`));
+      res.set('X-Cache', 'HIT');
+      return res.json(typeof cachedData === 'string' ? JSON.parse(cachedData) : cachedData);
+    }
+
+    res.originalJson = res.json;
+    res.json = (data: any) => {
+      if (res.statusCode >= 200 && res.statusCode < 300) {
+        const payload = typeof data === 'string' ? data : JSON.stringify(data);
+        cacheSet(cacheKey, payload, 'EX', 300).catch((err: any) => console.error(chalk.red('❌  Cache error:'), err));
+      }
+      return res.originalJson(data);
+    };
+
+    next();
+  } catch (err) {
+    console.error(chalk.red('❌  Cache middleware error:'), err);
+    next();
+  }
+});
+
+// Routes
+app.use('/auth', authRoutes);
+app.use('/users', userRoutes);
+app.use('/services', serviceRoutes);
+app.use('/bookings', bookingRoutes);
+app.use('/payments', paymentRoutes);
+app.use('/notifications', notificationRoutes);
+app.use('/activities', activityRoutes);
+app.use('/uploads', uploadRoutes);
+app.use('/workflows', workflowRoutes);
+
+// Health check endpoint with Redis status
+app.get('/health', async (req: any, res: any) => {
+  const healthCheck = {
+    status: 'OK',
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+    memory: process.memoryUsage(),
+    database: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
+    redis: USE_REDIS ? (redisClient && (redisClient as any).connected ? 'connected' : 'disconnected') : 'disabled'
+  } as any;
+  
+  console.log(chalk.cyan('🔍  Health check requested'));
+  res.status(200).json(healthCheck);
+});
+
+// Detailed health check endpoint
+app.get('/health/detailed', async (req: any, res: any) => {
+  const healthCheck: any = {
+    status: 'OK',
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+    memory: process.memoryUsage(),
+    cpu: process.cpuUsage(),
+    loadAverage: os.loadavg(),
+    platform: os.platform(),
+    arch: os.arch(),
+    hostname: os.hostname(),
+    database: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
+    redis: USE_REDIS ? (redisClient && (redisClient as any).connected ? 'connected' : 'disconnected') : 'disabled',
+    environment: process.env.NODE_ENV,
+    version: process.env.APP_VERSION || 'unknown'
+  };
+
+  if (mongoose.connection.readyState !== 1) {
+    healthCheck.status = 'ERROR';
+    healthCheck.database = 'disconnected';
+    console.log(chalk.red('❌  Detailed health check failed - DB disconnected'));
+    return res.status(503).json(healthCheck);
+  }
+
+  if (USE_REDIS && (!redisClient || !(redisClient as any).connected)) {
+    healthCheck.status = 'DEGRADED';
+    healthCheck.redis = 'disconnected';
+    console.log(chalk.yellow('⚠️   Detailed health check degraded - Redis disconnected'));
+  } else {
+    console.log(chalk.green('✅  Detailed health check passed'));
+  }
+
+  // SMTP
+  // SMTP / Mail provider
+  const mailProvider = (process.env.MAIL_PROVIDER || 'smtp').toLowerCase();
+  const mailEnabled = String(process.env.MAIL_ENABLED || 'true').toLowerCase() === 'true';
+  if (!mailEnabled || mailProvider === 'none' || mailProvider === 'disabled') {
+    healthCheck.smtp = 'disabled';
+  } else {
+    try {
+      const smtp = await verifySmtp();
+      healthCheck.smtp = smtp.ok ? 'connected' : 'disconnected';
+      if (!smtp.ok) {
+        healthCheck.smtpError = smtp.error;
+        if (healthCheck.status === 'OK') healthCheck.status = 'DEGRADED';
+        console.log(chalk.red('❌  SMTP verify failed:'), smtp.error);
+      }
+    } catch (e: any) {
+      healthCheck.smtp = 'disconnected';
+      healthCheck.smtpError = e && e.message ? e.message : String(e);
+      if (healthCheck.status === 'OK') healthCheck.status = 'DEGRADED';
+      console.log(chalk.red('❌  SMTP verify failed:'), healthCheck.smtpError);
+    }
+  }
+  
+  // return detailed health info
+  res.status(200).json(healthCheck);
+});
+
+const PORT = process.env.PORT || 5003;
+
+let server: any = null;
+if (require.main === module) {
+  server = app.listen(PORT, () => {
+    console.log(chalk.green(`🚀  Server is running on port ${chalk.underline(PORT)}`));
+    console.log(chalk.blue(`📊  Environment: ${chalk.bold(process.env.NODE_ENV)}`));
+    console.log(chalk.cyan(`🔗  Health check available at: ${chalk.underline(`http://localhost:${PORT}/health`)}`));
+
+    // Initialize Socket.io
+    const io = initSocket(server);
+    app.set('io', io); // Make io accessible in routes
+
+    // Startup diagnostics (non-blocking)
+    (async () => {
+      try {
+        const version = process.env.APP_VERSION || 'unknown';
+        const redisStatus = USE_REDIS ? (redisClient && (redisClient as any).connected ? 'connected' : 'disconnected') : 'disabled';
+        const dbState = ['disconnected','connected','connecting','disconnecting'][(mongoose.connection.readyState as any)] || String(mongoose.connection.readyState);
+        const mem = process.memoryUsage();
+        const load = os.loadavg();
+
+        console.log(chalk.white('\n──────────────── Startup Diagnostics ────────────────'));
+        console.log(' App version:   ', version);
+        console.log(' Node:          ', process.version);
+        console.log(' Env:           ', process.env.NODE_ENV);
+        console.log(' Mongo state:   ', dbState);
+        console.log(' Redis:         ', redisStatus);
+        console.log(' Memory (MB):   ', `rss=${(mem.rss/1048576).toFixed(1)} heapUsed=${(mem.heapUsed/1048576).toFixed(1)}`);
+        console.log(' Load avg:      ', load.map(n => n.toFixed(2)).join(', '));
+        console.log(' Routes:        ', ['/auth','/users','/services','/bookings','/payments','/notifications','/activities','/uploads'].join(' '));
+
+        const mailProvider = (process.env.MAIL_PROVIDER || 'smtp').toLowerCase();
+        const mailEnabled = String(process.env.MAIL_ENABLED || 'true').toLowerCase() === 'true';
+        if (!mailEnabled || mailProvider === 'none' || mailProvider === 'disabled') {
+          console.log(' SMTP:          ', 'disabled');
+        } else {
+          try {
+            const smtp = await require('./config/mailer').verifySmtp();
+            console.log(' SMTP:          ', smtp.ok ? chalk.green(`connected (${mailProvider})`) : chalk.red(`failed: ${typeof smtp.error === 'string' ? smtp.error : JSON.stringify(smtp.error)}`));
+          } catch (e) {
+            console.log(' SMTP:          ', chalk.red('failed to verify'));
+          }
+        }
+
+        if (process.env.EXTERNAL_API_URL) {
+          try {
+            const start = Date.now();
+            await dns.lookup(new URL(process.env.EXTERNAL_API_URL).hostname);
+            console.log(' External DNS:  ', chalk.green(`ok (${Date.now()-start}ms)`));
+          } catch (err: any) {
+            console.log(' External DNS:  ', chalk.red(`fail: ${err.message}`));
+          }
+        }
+        console.log('────────────────────────────────────────────────────\n');
+      } catch (e: any) {
+        console.log(chalk.red('Startup diagnostics error:'), e.message);
+      }
+    })();
+  });
+}
+
+// Handle server errors (only if server was started)
+if (server && typeof server.on === 'function') {
+  server.on('error', (err: any) => {
+    console.error(chalk.red('❌  Server error:'), err);
+    process.exit(1);
+  });
+}
+
+// Global error observers (to aid diagnostics)
+process.on('unhandledRejection', (reason: any) => {
+  console.error(chalk.red('🚨 Unhandled Promise Rejection:'), reason);
+});
+process.on('uncaughtException', (err: any) => {
+  console.error(chalk.red('🚨 Uncaught Exception:'), err);
+});
+
+// Graceful shutdown
+const gracefulShutdown = async () => {
+  console.log(chalk.yellow('\n⚠️   Received shutdown signal, shutting down gracefully'));
+  
+  try {
+    if (server && typeof server.close === 'function') {
+      server.close(() => {
+        console.log(chalk.green('✅  HTTP server closed'));
+      });
+    }
+
+    if (mongoose && mongoose.connection) {
+      await mongoose.connection.close();
+      console.log(chalk.green('✅  MongoDB connection closed'));
+    }
+
+    if (redisClient) {
+      if (typeof (redisClient as any).quit === 'function') {
+        (redisClient as any).quit(() => {
+          console.log(chalk.green('✅  Redis client closed'));
+          process.exit(0);
+        });
+        return;
+      }
+    }
+
+    process.exit(0);
+  } catch (err: any) {
+    console.error(chalk.red('❌  Error during shutdown:'), err);
+    process.exit(1);
+  }
+};
+
+process.on('SIGINT', gracefulShutdown);
+process.on('SIGTERM', gracefulShutdown);
+
+// Make Redis client available app-wide
+app.set('redisClient', redisClient);
+app.set('redisGet', redisGet);
+app.set('redisSet', redisSet);
+app.set('redisDel', redisDel);
+app.set('redisExists', redisExists);
+
+module.exports = app;
+// Also export initSocket helper so tests can attach a socket.io server to the app when needed
+try {
+  module.exports.initSocket = initSocket;
+} catch (_) {}
+
+
