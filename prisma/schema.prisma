@@ -1,0 +1,293 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Enable PostGIS extension for geospatial data
+// Run: CREATE EXTENSION postgis; in your PostgreSQL database
+
+// Base User model with common fields
+model User {
+  id                String   @id @default(cuid())
+  email             String   @unique
+  password          String
+  firstName         String
+  lastName          String
+  phone             String?
+  role              String   // 'customer', 'service_provider', 'admin'
+  
+  // Common verification flags
+  isEmailVerified   Boolean  @default(false)
+  isPhoneVerified   Boolean  @default(false)
+  verificationToken String?
+  verificationExpires DateTime?
+  
+  // Common profile fields
+  profileImage      String   @default("")
+  location          Json?    // { type: "Point", coordinates: [lng, lat], address: string }
+  walletBalance     Float    @default(0)
+  status            String   @default("active") // 'active', 'inactive', 'banned'
+  lastLoginAt       DateTime?
+  
+  // Relations
+  customer          Customer?
+  serviceProvider   ServiceProvider?
+  notifications     Notification[]
+  activities        Activity[]
+  
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@map("users")
+}
+
+// Customer-specific data
+model Customer {
+  id                String   @id @default(cuid())
+  userId            String   @unique
+  
+  // Customer-specific fields
+  favouriteProviders String[] @default([])
+  totalBookings     Int      @default(0)
+  ratingGivenAvg    Float    @default(0)
+  
+  // Relations
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  bookings          Booking[]
+  payments          Payment[]
+  
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@map("customers")
+}
+
+// Service Provider-specific data
+model ServiceProvider {
+  id                String   @id @default(cuid())
+  userId            String   @unique
+  
+  // Provider-specific fields
+  skills            String[] @default([])
+  experienceYears   Int      @default(0)
+  isOnline          Boolean  @default(false)
+  rating            Float    @default(0)
+  totalReviews      Int      @default(0)
+  
+  // Verification
+  isVerified        Boolean  @default(false)
+  isIdentityVerified Boolean @default(false)
+  verificationToken String?
+  verificationExpires DateTime?
+  
+  // Availability (JSON for flexibility)
+  availability      Json?    // { days: string[], hours: { start: string, end: string } }
+  
+  // Service area (geospatial)
+  serviceAreaRadius Float    @default(0)
+  serviceAreaCenter Json?    // { type: "Point", coordinates: [lng, lat] }
+  
+  // Profile completion
+  isProfileComplete Boolean  @default(false)
+  
+  // Relations
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  documents         Document[]
+  services          Service[]
+  
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@map("service_providers")
+}
+
+model Service {
+  id          String   @id @default(cuid())
+  title       String
+  description String
+  category    String
+  price       Float
+  duration    Int      // in minutes
+  mediaUrl    String?
+  status      String   @default("active") // 'active', 'draft', 'archived'
+  
+  // Relations
+  providerId  String
+  provider    ServiceProvider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  bookings    Booking[]
+  workflows   ServiceWorkflow[]
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("services")
+}
+
+model Booking {
+  id                     String   @id @default(cuid())
+  date                   DateTime
+  time                   String
+  location               Json?    // { type: "Point", coordinates: [lng, lat], address: string }
+  notes                  String?
+  status                 String   @default("pending") // 'pending', 'confirmed', 'in_progress', 'completed', 'cancelled'
+  
+  // SLA tracking
+  estimatedDurationMinutes Int    @default(0)
+  startedAt              DateTime?
+  completedAt            DateTime?
+  slaBreached            Boolean  @default(false)
+  
+  // Live tracking (for mobile app)
+  providerLiveLocation   Json?    // { type: "Point", coordinates: [lng, lat] }
+  customerLiveLocation   Json?    // { type: "Point", coordinates: [lng, lat] }
+  
+  // Rating and review
+  rating                 Int?     // 1-5
+  review                 String?
+  
+  // Relations
+  customerId             String
+  customer               Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  
+  serviceId              String
+  service                Service  @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  
+  payment                Payment?
+  
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+
+  @@map("bookings")
+}
+
+model Payment {
+  id            String   @id @default(cuid())
+  amount        Float
+  currency      String   @default("USD")
+  paymentMethod String   // 'card', 'wallet', 'mobile_money'
+  status        String   @default("pending") // 'pending', 'completed', 'failed', 'refunded'
+  transactionId String?
+  
+  // Relations
+  customerId    String
+  customer      Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  
+  bookingId     String   @unique
+  booking       Booking  @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@map("payments")
+}
+
+model Document {
+  id        String   @id @default(cuid())
+  type      String   // 'identity', 'license', etc.
+  url       String
+  verified  Boolean  @default(false)
+  
+  // Relations
+  providerId String
+  provider   ServiceProvider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  
+  createdAt DateTime @default(now())
+
+  @@map("documents")
+}
+
+model Notification {
+  id      String   @id @default(cuid())
+  message String
+  type    String   @default("system") // 'system', 'reminder', 'promo'
+  status  String   @default("sent")   // 'sent', 'read', 'unread'
+  
+  // Relations
+  userId  String
+  user    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  createdAt DateTime @default(now())
+
+  @@map("notifications")
+}
+
+model Activity {
+  id          String   @id @default(cuid())
+  actionType  String   // 'register', 'login', 'logout', 'service_create', 'booking_create', etc.
+  contentId   String?  // ID of related content
+  contentModel String? // Type of related content
+  details     Json?    // Additional data
+  device      String?
+  location    String?
+  timestamp   DateTime @default(now())
+  
+  // Relations
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  createdAt   DateTime @default(now())
+
+  @@map("activities")
+}
+
+// Additional models for workflows and other features
+model ServiceWorkflow {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  steps       Json     // Array of workflow steps
+  isActive    Boolean  @default(true)
+  
+  // Relations
+  serviceId   String
+  service     Service  @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("service_workflows")
+}
+
+model Message {
+  id        String   @id @default(cuid())
+  content   String
+  senderId  String
+  receiverId String
+  bookingId String?
+  isRead    Boolean  @default(false)
+  
+  createdAt DateTime @default(now())
+
+  @@map("messages")
+}
+
+model Recommendation {
+  id          String   @id @default(cuid())
+  userId      String
+  serviceId   String
+  score       Float
+  reason      String?
+  
+  createdAt   DateTime @default(now())
+
+  @@map("recommendations")
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  userId    String
+  token     String   @unique
+  expiresAt DateTime
+  isActive  Boolean  @default(true)
+  
+  createdAt DateTime @default(now())
+
+  @@map("sessions")
+}

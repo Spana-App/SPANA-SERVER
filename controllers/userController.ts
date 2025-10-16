@@ -1,9 +1,27 @@
-const User = require('../models/User');
+const prisma = require('../lib/database').default;
 
 // Get all users (admin only)
 exports.getAllUsers = async (req, res) => {
   try {
-    const users = await User.find().select('-password');
+    const users = await prisma.user.findMany({
+      select: {
+        id: true,
+        email: true,
+        firstName: true,
+        lastName: true,
+        phone: true,
+        role: true,
+        isEmailVerified: true,
+        isPhoneVerified: true,
+        profileImage: true,
+        location: true,
+        walletBalance: true,
+        status: true,
+        lastLoginAt: true,
+        createdAt: true,
+        updatedAt: true
+      }
+    });
     res.json(users);
   } catch (error) {
     res.status(500).json({ message: 'Server error' });
@@ -13,7 +31,26 @@ exports.getAllUsers = async (req, res) => {
 // Get user by ID
 exports.getUserById = async (req, res) => {
   try {
-    const user = await User.findById(req.params.id).select('-password');
+    const user = await prisma.user.findUnique({
+      where: { id: req.params.id },
+      select: {
+        id: true,
+        email: true,
+        firstName: true,
+        lastName: true,
+        phone: true,
+        role: true,
+        isEmailVerified: true,
+        isPhoneVerified: true,
+        profileImage: true,
+        location: true,
+        walletBalance: true,
+        status: true,
+        lastLoginAt: true,
+        createdAt: true,
+        updatedAt: true
+      }
+    });
     if (!user) {
       return res.status(404).json({ message: 'User not found' });
     }
@@ -27,46 +64,87 @@ exports.getUserById = async (req, res) => {
 exports.updateUser = async (req, res) => {
   try {
     const body = req.body || {};
-    const user = await User.findById(req.params.id);
+    const user = await prisma.user.findUnique({
+      where: { id: req.params.id },
+      include: {
+        customer: true,
+        serviceProvider: true
+      }
+    });
 
     if (!user) {
       return res.status(404).json({ message: 'User not found' });
     }
 
     // Check if the user is updating their own profile or is an admin
-    if (user._id.toString() !== req.user.id && req.user.role !== 'admin') {
+    if (user.id !== req.user.id && req.user.role !== 'admin') {
       return res.status(403).json({ message: 'Not authorized' });
     }
 
+    // Prepare update data
+    const updateData: any = {};
+    
     // Always-allowed common fields
-    if (typeof body.firstName === 'string') user.firstName = body.firstName;
-    if (typeof body.lastName === 'string') user.lastName = body.lastName;
-    if (typeof body.phone === 'string') user.phone = body.phone;
-    if (body.location) user.location = body.location;
-    if (typeof body.profileImage === 'string') user.profileImage = body.profileImage;
+    if (typeof body.firstName === 'string') updateData.firstName = body.firstName;
+    if (typeof body.lastName === 'string') updateData.lastName = body.lastName;
+    if (typeof body.phone === 'string') updateData.phone = body.phone;
+    if (body.location) updateData.location = body.location;
+    if (typeof body.profileImage === 'string') updateData.profileImage = body.profileImage;
 
-    // Role-based fields
-    if (user.role === 'customer') {
-      if (body.customerDetails) {
-        user.customerDetails = {
-          favouriteProviders: body.customerDetails.favouriteProviders || user.customerDetails?.favouriteProviders,
-          totalBookings: typeof body.customerDetails.totalBookings === 'number' ? body.customerDetails.totalBookings : (user.customerDetails?.totalBookings || 0),
-          ratingGivenAvg: typeof body.customerDetails.ratingGivenAvg === 'number' ? body.customerDetails.ratingGivenAvg : (user.customerDetails?.ratingGivenAvg || 0)
-        };
+    // Update user
+    const updatedUser = await prisma.user.update({
+      where: { id: req.params.id },
+      data: updateData,
+      select: {
+        id: true,
+        email: true,
+        firstName: true,
+        lastName: true,
+        phone: true,
+        role: true,
+        isEmailVerified: true,
+        isPhoneVerified: true,
+        profileImage: true,
+        location: true,
+        walletBalance: true,
+        status: true,
+        lastLoginAt: true,
+        createdAt: true,
+        updatedAt: true
       }
-      // Explicitly ignore provider-only fields
-    } else if (user.role === 'service provider') {
-      if (Array.isArray(body.skills)) user.skills = body.skills;
-      if (typeof body.experienceYears === 'number') user.experienceYears = body.experienceYears;
-      if (typeof body.isOnline === 'boolean') user.isOnline = body.isOnline;
-      if (body.availability) user.availability = body.availability;
-      if (body.serviceArea) user.serviceArea = body.serviceArea;
-      // documents are managed via upload endpoints
+    });
+
+    // Update role-specific data
+    if (user.role === 'customer' && body.customerDetails) {
+      await prisma.customer.update({
+        where: { userId: user.id },
+        data: {
+          favouriteProviders: body.customerDetails.favouriteProviders || user.customer?.favouriteProviders,
+          totalBookings: typeof body.customerDetails.totalBookings === 'number' ? body.customerDetails.totalBookings : (user.customer?.totalBookings || 0),
+          ratingGivenAvg: typeof body.customerDetails.ratingGivenAvg === 'number' ? body.customerDetails.ratingGivenAvg : (user.customer?.ratingGivenAvg || 0)
+        }
+      });
+    } else if (user.role === 'service_provider') {
+      const providerUpdateData: any = {};
+      if (Array.isArray(body.skills)) providerUpdateData.skills = body.skills;
+      if (typeof body.experienceYears === 'number') providerUpdateData.experienceYears = body.experienceYears;
+      if (typeof body.isOnline === 'boolean') providerUpdateData.isOnline = body.isOnline;
+      if (body.availability) providerUpdateData.availability = body.availability;
+      if (body.serviceArea) {
+        providerUpdateData.serviceAreaRadius = body.serviceArea.radiusInKm || user.serviceProvider?.serviceAreaRadius;
+        providerUpdateData.serviceAreaCenter = body.serviceArea.baseLocation || user.serviceProvider?.serviceAreaCenter;
+      }
+      if (typeof body.isProfileComplete === 'boolean') providerUpdateData.isProfileComplete = body.isProfileComplete;
+      
+      if (Object.keys(providerUpdateData).length > 0) {
+        await prisma.serviceProvider.update({
+          where: { userId: user.id },
+          data: providerUpdateData
+        });
+      }
     }
 
-    await user.save();
-
-    res.json(user);
+    res.json(updatedUser);
   } catch (error) {
     res.status(500).json({ message: 'Server error' });
   }
@@ -75,12 +153,16 @@ exports.updateUser = async (req, res) => {
 // Delete user (admin only)
 exports.deleteUser = async (req, res) => {
   try {
-    const user = await User.findById(req.params.id);
+    const user = await prisma.user.findUnique({
+      where: { id: req.params.id }
+    });
     if (!user) {
       return res.status(404).json({ message: 'User not found' });
     }
 
-    await User.findByIdAndDelete(req.params.id);
+    await prisma.user.delete({
+      where: { id: req.params.id }
+    });
     res.json({ message: 'User removed' });
   } catch (error) {
     res.status(500).json({ message: 'Server error' });
@@ -90,7 +172,34 @@ exports.deleteUser = async (req, res) => {
 // Get all providers
 exports.getAllProviders = async (req, res) => {
   try {
-    const providers = await User.find({ role: 'provider', isVerified: true }).select('-password');
+    const providers = await prisma.user.findMany({
+      where: { 
+        role: 'service_provider',
+        serviceProvider: {
+          isVerified: true
+        }
+      },
+      include: {
+        serviceProvider: true
+      },
+      select: {
+        id: true,
+        email: true,
+        firstName: true,
+        lastName: true,
+        phone: true,
+        role: true,
+        isEmailVerified: true,
+        isPhoneVerified: true,
+        profileImage: true,
+        location: true,
+        walletBalance: true,
+        status: true,
+        lastLoginAt: true,
+        createdAt: true,
+        updatedAt: true
+      }
+    });
     res.json(providers);
   } catch (error) {
     res.status(500).json({ message: 'Server error' });
@@ -101,11 +210,37 @@ exports.getAllProviders = async (req, res) => {
 exports.getProvidersByService = async (req, res) => {
   try {
     const { serviceCategory } = req.params;
-    const providers = await User.find({
-      role: 'provider',
-      isVerified: true,
-      skills: { $in: [serviceCategory] }
-    }).select('-password');
+    const providers = await prisma.user.findMany({
+      where: {
+        role: 'service_provider',
+        serviceProvider: {
+          isVerified: true,
+          skills: {
+            has: serviceCategory
+          }
+        }
+      },
+      include: {
+        serviceProvider: true
+      },
+      select: {
+        id: true,
+        email: true,
+        firstName: true,
+        lastName: true,
+        phone: true,
+        role: true,
+        isEmailVerified: true,
+        isPhoneVerified: true,
+        profileImage: true,
+        location: true,
+        walletBalance: true,
+        status: true,
+        lastLoginAt: true,
+        createdAt: true,
+        updatedAt: true
+      }
+    });
 
     res.json(providers);
   } catch (error) {
@@ -117,17 +252,33 @@ exports.getProvidersByService = async (req, res) => {
 exports.verifyProvider = async (req, res) => {
   try {
     const { userId, token } = req.body;
-    const user = await User.findById(userId);
-    if (!user || user.role !== 'provider') {
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      include: {
+        serviceProvider: true
+      }
+    });
+    
+    if (!user || user.role !== 'service_provider') {
       return res.status(404).json({ message: 'Provider not found' });
     }
-    if (!user.verification || user.verification.token !== token || (user.verification.expiresAt && user.verification.expiresAt < new Date())) {
+    
+    if (!user.serviceProvider?.verificationToken || 
+        user.serviceProvider.verificationToken !== token || 
+        (user.serviceProvider.verificationExpires && user.serviceProvider.verificationExpires < new Date())) {
       return res.status(400).json({ message: 'Invalid or expired verification token' });
     }
-    user.isVerified = true;
-    user.verification = undefined;
-    await user.save();
-    res.json({ message: 'Provider verified', user: { _id: user._id, isVerified: user.isVerified } });
+    
+    await prisma.serviceProvider.update({
+      where: { userId: user.id },
+      data: {
+        isVerified: true,
+        verificationToken: null,
+        verificationExpires: null
+      }
+    });
+    
+    res.json({ message: 'Provider verified', user: { id: user.id, isVerified: true } });
   } catch (error) {
     res.status(500).json({ message: 'Server error' });
   }

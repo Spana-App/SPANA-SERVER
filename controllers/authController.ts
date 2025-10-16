@@ -1,8 +1,10 @@
-const User = require('../models/User');
+import prisma from '../lib/database';
+// import { syncUserToMongo } from '../lib/mongoSync';
 const jwt = require('jsonwebtoken');
 const { validationResult } = require('express-validator');
 const { sendWelcomeEmail, sendVerificationEmail } = require('../config/mailer');
 const nodeCrypto = require('crypto');
+const bcrypt = require('bcryptjs');
 
 // Generate JWT Token
 const generateToken = (id: any) => {
@@ -14,67 +16,134 @@ const generateToken = (id: any) => {
 // Register user
 exports.register = async (req: any, res: any) => {
   try {
+    console.log('Registration attempt:', { email: req.body.email, role: req.body.role });
+    
     // Check for validation errors
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
+      console.log('Validation errors:', errors.array());
       return res.status(400).json({ errors: errors.array() });
     }
 
     const { email, password, firstName, lastName, phone, role } = req.body;
+    console.log('Extracted data:', { email, firstName, lastName, phone, role });
 
     // Check if user already exists
-    const existingUser = await User.findOne({ email });
+    const existingUser = await prisma.user.findUnique({ where: { email } });
     if (existingUser) {
       return res.status(400).json({ message: 'User already exists with this email' });
     }
 
-    // Create new user
-    const user = new User({
+    // Hash password
+    const hashedPassword = await bcrypt.hash(password, 12);
+
+    // Prepare user data
+    const userData: any = {
       email,
-      password,
+      password: hashedPassword,
       firstName,
       lastName,
       phone,
       role: role || 'customer'
+    };
+
+    // Note: Provider-specific fields are now handled in the ServiceProvider model
+
+    // Create new user
+    console.log('Creating user with data:', userData);
+    const user = await prisma.user.create({
+      data: userData
     });
+    console.log('User created:', user.id);
 
-    // Ensure provider-only fields are initialized for service providers
-    if (user.role === 'service provider') {
-      if (!Array.isArray(user.skills)) user.skills = [];
-      if (typeof user.experienceYears !== 'number') user.experienceYears = 0;
-      if (typeof user.isOnline !== 'boolean') user.isOnline = false;
-      if (!Array.isArray(user.documents)) user.documents = [];
-      if (!user.availability) user.availability = { days: [], hours: { start: '', end: '' } };
-      if (!user.serviceArea) user.serviceArea = { radiusInKm: 0, baseLocation: { type: 'Point', coordinates: [0, 0] } };
+    // Create role-specific record
+    if (role === 'customer') {
+      console.log('Creating customer record for user:', user.id);
+      await prisma.customer.create({
+        data: {
+          userId: user.id,
+          favouriteProviders: [],
+          totalBookings: 0,
+          ratingGivenAvg: 0
+        }
+      });
+      console.log('Customer record created');
+    } else if (role === 'service_provider') {
+      console.log('Creating service provider record for user:', user.id);
+      await prisma.serviceProvider.create({
+        data: {
+          userId: user.id,
+          skills: [],
+          experienceYears: 0,
+          isOnline: false,
+          rating: 0,
+          totalReviews: 0,
+          isVerified: false,
+          isIdentityVerified: false,
+          availability: { days: [], hours: { start: '', end: '' } },
+          serviceAreaRadius: 0,
+          serviceAreaCenter: { type: 'Point', coordinates: [0, 0] },
+          isProfileComplete: false
+        }
+      });
+      console.log('Service provider record created');
     }
-
-    await user.save();
 
     // Generate token
-    const token = generateToken(user._id);
+    const token = generateToken(user.id);
 
-    // Remove password and shape response by role
-    const userObj = { ...user.toObject() };
-    delete (userObj as any).password;
+    // Fetch user with role-specific data for response
+    const userWithRole = await prisma.user.findUnique({
+      where: { id: user.id },
+      include: {
+        customer: true,
+        serviceProvider: true
+      }
+    });
+
+    // Shape response by role
     let userResponse: any;
-    if (userObj.role === 'customer') {
-      const { _id, email, firstName, lastName, phone, role, isVerified, isEmailVerified, isPhoneVerified, profileImage, location, walletBalance, status, paymentMethods, customerDetails, createdAt, updatedAt, __v } = userObj;
-      userResponse = { _id, email, firstName, lastName, phone, role, isVerified, isEmailVerified, isPhoneVerified, profileImage, location, walletBalance, status, paymentMethods, customerDetails, createdAt, updatedAt, __v };
+    if (user.role === 'customer' && userWithRole?.customer) {
+      const { id, email, firstName, lastName, phone, role, isEmailVerified, isPhoneVerified, profileImage, location, walletBalance, status, createdAt, updatedAt } = user;
+      const { favouriteProviders, totalBookings, ratingGivenAvg } = userWithRole.customer;
+      userResponse = { 
+        _id: id, email, firstName, lastName, phone, role, isVerified: false, isEmailVerified, isPhoneVerified, 
+        profileImage, location, walletBalance, status, 
+        customerDetails: { favouriteProviders, totalBookings, ratingGivenAvg }, 
+        createdAt, updatedAt, __v: 0 
+      };
+    } else if (user.role === 'service_provider' && userWithRole?.serviceProvider) {
+      const { id, email, firstName, lastName, phone, role, isEmailVerified, isPhoneVerified, profileImage, location, walletBalance, status, createdAt, updatedAt } = user;
+      const { skills, experienceYears, isOnline, rating, totalReviews, isVerified, isIdentityVerified, availability, serviceAreaRadius, serviceAreaCenter, isProfileComplete } = userWithRole.serviceProvider;
+      userResponse = { 
+        _id: id, email, firstName, lastName, phone, role, isVerified, isEmailVerified, isPhoneVerified, isIdentityVerified, 
+        profileImage, skills, experienceYears, isOnline, rating, totalReviews, isProfileComplete, 
+        availability, serviceArea: { radiusInKm: serviceAreaRadius, baseLocation: serviceAreaCenter }, 
+        location, walletBalance, status, createdAt, updatedAt, __v: 0 
+      };
     } else {
-      const { _id, email, firstName, lastName, phone, role, isVerified, isEmailVerified, isPhoneVerified, isIdentityVerified, profileImage, skills, experienceYears, isOnline, documents, rating, totalReviews, availability, serviceArea, location, walletBalance, status, paymentMethods, createdAt, updatedAt, __v } = userObj;
-      userResponse = { _id, email, firstName, lastName, phone, role, isVerified, isEmailVerified, isPhoneVerified, isIdentityVerified, profileImage, skills, experienceYears, isOnline, documents, rating, totalReviews, availability, serviceArea, location, walletBalance, status, paymentMethods, createdAt, updatedAt, __v };
+      // Fallback for admin or other roles
+      userResponse = {
+        _id: user.id, email: user.email, firstName: user.firstName, lastName: user.lastName, 
+        phone: user.phone, role: user.role, isVerified: false, isEmailVerified: user.isEmailVerified, 
+        isPhoneVerified: user.isPhoneVerified, profileImage: user.profileImage, location: user.location, 
+        walletBalance: user.walletBalance, status: user.status, createdAt: user.createdAt, 
+        updatedAt: user.updatedAt, __v: 0
+      };
     }
 
-    // Provider verification email if role is provider
-    if (user.role === 'provider') {
+    // Provider verification email if role is service provider
+    if (user.role === 'service_provider') {
       try {
         const verificationToken = nodeCrypto.randomBytes(32).toString('hex');
-        user.verification = {
-          token: verificationToken,
-          expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000)
-        };
-        await user.save();
-        const verificationLink = `${process.env.CLIENT_URL}/verify-provider?token=${verificationToken}&uid=${user._id}`;
+        await prisma.serviceProvider.update({
+          where: { userId: user.id },
+          data: {
+            verificationToken,
+            verificationExpires: new Date(Date.now() + 24 * 60 * 60 * 1000)
+          }
+        });
+        const verificationLink = `${process.env.CLIENT_URL}/verify-provider?token=${verificationToken}&uid=${user.id}`;
         sendVerificationEmail(user, verificationLink).catch(() => {});
       } catch (_) {}
     }
@@ -84,14 +153,20 @@ exports.register = async (req: any, res: any) => {
       sendWelcomeEmail(user).catch(() => {});
     } catch (_) {}
 
+    // Sync to MongoDB backup (fire-and-forget)
+    try {
+      // syncUserToMongo(user).catch(() => {});
+    } catch (_) {}
+
     res.status(201).json({
       message: 'User created successfully',
       token,
       user: userResponse
     });
   } catch (error) {
-    console.error(error);
-    res.status(500).json({ message: 'Server error during registration' });
+    console.error('Registration error:', error);
+    console.error('Error stack:', error.stack);
+    res.status(500).json({ message: 'Server error during registration', error: error.message });
   }
 };
 
@@ -101,40 +176,76 @@ exports.login = async (req: any, res: any) => {
     const { email, password } = req.body;
 
     // Check if user exists
-    const user = await User.findOne({ email });
+    const user = await prisma.user.findUnique({ where: { email } });
     if (!user) {
       return res.status(400).json({ message: 'Invalid credentials' });
     }
 
     // Check password
-    const isMatch = await user.comparePassword(password);
+    const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) {
       return res.status(400).json({ message: 'Invalid credentials' });
     }
 
     // Generate token
-    const token = generateToken(user._id);
+    const token = generateToken(user.id);
 
     // Log activity and update lastLoginAt
     try {
-      const Activity = require('../models/Activity');
-      await Activity.create({ userId: user._id, actionType: 'login' });
+      await prisma.activity.create({ 
+        data: { 
+          userId: user.id, 
+          actionType: 'login' 
+        } 
+      });
     } catch (_) {}
     try {
-      user.lastLoginAt = new Date();
-      await user.save();
+      const updatedUser = await prisma.user.update({
+        where: { id: user.id },
+        data: { lastLoginAt: new Date() }
+      });
+      // Sync updated user to MongoDB
+      // syncUserToMongo(updatedUser).catch(() => {});
     } catch (_) {}
 
-    // Remove password and shape response by role
-    const userObj = { ...user.toObject() };
-    delete (userObj as any).password;
+    // Fetch user with role-specific data for response
+    const userWithRole = await prisma.user.findUnique({
+      where: { id: user.id },
+      include: {
+        customer: true,
+        serviceProvider: true
+      }
+    });
+
+    // Shape response by role
     let userResponse: any;
-    if (userObj.role === 'customer') {
-      const { _id, email, firstName, lastName, phone, role, isVerified, isEmailVerified, isPhoneVerified, profileImage, location, walletBalance, status, paymentMethods, customerDetails, createdAt, updatedAt, __v } = userObj;
-      userResponse = { _id, email, firstName, lastName, phone, role, isVerified, isEmailVerified, isPhoneVerified, profileImage, location, walletBalance, status, paymentMethods, customerDetails, createdAt, updatedAt, __v };
+    if (user.role === 'customer' && userWithRole?.customer) {
+      const { id, email, firstName, lastName, phone, role, isEmailVerified, isPhoneVerified, profileImage, location, walletBalance, status, createdAt, updatedAt } = user;
+      const { favouriteProviders, totalBookings, ratingGivenAvg } = userWithRole.customer;
+      userResponse = { 
+        _id: id, email, firstName, lastName, phone, role, isVerified: false, isEmailVerified, isPhoneVerified, 
+        profileImage, location, walletBalance, status, 
+        customerDetails: { favouriteProviders, totalBookings, ratingGivenAvg }, 
+        createdAt, updatedAt, __v: 0 
+      };
+    } else if (user.role === 'service_provider' && userWithRole?.serviceProvider) {
+      const { id, email, firstName, lastName, phone, role, isEmailVerified, isPhoneVerified, profileImage, location, walletBalance, status, createdAt, updatedAt } = user;
+      const { skills, experienceYears, isOnline, rating, totalReviews, isVerified, isIdentityVerified, availability, serviceAreaRadius, serviceAreaCenter, isProfileComplete } = userWithRole.serviceProvider;
+      userResponse = { 
+        _id: id, email, firstName, lastName, phone, role, isVerified, isEmailVerified, isPhoneVerified, isIdentityVerified, 
+        profileImage, skills, experienceYears, isOnline, rating, totalReviews, isProfileComplete, 
+        availability, serviceArea: { radiusInKm: serviceAreaRadius, baseLocation: serviceAreaCenter }, 
+        location, walletBalance, status, createdAt, updatedAt, __v: 0 
+      };
     } else {
-      const { _id, email, firstName, lastName, phone, role, isVerified, isEmailVerified, isPhoneVerified, isIdentityVerified, profileImage, skills, experienceYears, isOnline, documents, rating, totalReviews, availability, serviceArea, location, walletBalance, status, paymentMethods, createdAt, updatedAt, __v } = userObj;
-      userResponse = { _id, email, firstName, lastName, phone, role, isVerified, isEmailVerified, isPhoneVerified, isIdentityVerified, profileImage, skills, experienceYears, isOnline, documents, rating, totalReviews, availability, serviceArea, location, walletBalance, status, paymentMethods, createdAt, updatedAt, __v };
+      // Fallback for admin or other roles
+      userResponse = {
+        _id: user.id, email: user.email, firstName: user.firstName, lastName: user.lastName, 
+        phone: user.phone, role: user.role, isVerified: false, isEmailVerified: user.isEmailVerified, 
+        isPhoneVerified: user.isPhoneVerified, profileImage: user.profileImage, location: user.location, 
+        walletBalance: user.walletBalance, status: user.status, createdAt: user.createdAt, 
+        updatedAt: user.updatedAt, __v: 0
+      };
     }
 
     res.json({
@@ -151,16 +262,93 @@ exports.login = async (req: any, res: any) => {
 // Get current user
 exports.getMe = async (req: any, res: any) => {
   try {
-    const user = await User.findById(req.user.id);
+    const user = await prisma.user.findUnique({ 
+      where: { id: req.user.id },
+      include: {
+        customer: true,
+        serviceProvider: true
+      }
+    });
+    
     if (!user) return res.status(404).json({ message: 'User not found' });
-    const userObj = { ...user.toObject() };
-    delete (userObj as any).password;
-    if (userObj.role === 'customer') {
-      const { _id, email, firstName, lastName, phone, role, isVerified, isEmailVerified, isPhoneVerified, profileImage, location, walletBalance, status, paymentMethods, customerDetails, createdAt, updatedAt, __v } = userObj;
-      return res.json({ _id, email, firstName, lastName, phone, role, isVerified, isEmailVerified, isPhoneVerified, profileImage, location, walletBalance, status, paymentMethods, customerDetails, createdAt, updatedAt, __v });
+    
+    if (user.role === 'customer') {
+      const { id, email, firstName, lastName, phone, role, isEmailVerified, isPhoneVerified, profileImage, location, walletBalance, status, createdAt, updatedAt, customer } = user;
+      return res.json({ 
+        _id: id, 
+        email, 
+        firstName, 
+        lastName, 
+        phone, 
+        role, 
+        isEmailVerified, 
+        isPhoneVerified, 
+        profileImage, 
+        location, 
+        walletBalance, 
+        status, 
+        customerDetails: { 
+          favouriteProviders: customer?.favouriteProviders || [], 
+          totalBookings: customer?.totalBookings || 0, 
+          ratingGivenAvg: customer?.ratingGivenAvg || 0 
+        }, 
+        createdAt, 
+        updatedAt, 
+        __v: 0 
+      });
     }
-    const { _id, email, firstName, lastName, phone, role, isVerified, isEmailVerified, isPhoneVerified, isIdentityVerified, profileImage, skills, experienceYears, isOnline, documents, rating, totalReviews, availability, serviceArea, location, walletBalance, status, paymentMethods, createdAt, updatedAt, __v } = userObj;
-    return res.json({ _id, email, firstName, lastName, phone, role, isVerified, isEmailVerified, isPhoneVerified, isIdentityVerified, profileImage, skills, experienceYears, isOnline, documents, rating, totalReviews, availability, serviceArea, location, walletBalance, status, paymentMethods, createdAt, updatedAt, __v });
+    
+    if (user.role === 'service_provider') {
+      const { id, email, firstName, lastName, phone, role, isEmailVerified, isPhoneVerified, profileImage, location, walletBalance, status, createdAt, updatedAt, serviceProvider } = user;
+      return res.json({ 
+        _id: id, 
+        email, 
+        firstName, 
+        lastName, 
+        phone, 
+        role, 
+        isEmailVerified, 
+        isPhoneVerified, 
+        isIdentityVerified: serviceProvider?.isIdentityVerified || false,
+        profileImage, 
+        skills: serviceProvider?.skills || [],
+        experienceYears: serviceProvider?.experienceYears || 0,
+        isOnline: serviceProvider?.isOnline || false,
+        rating: serviceProvider?.rating || 0,
+        totalReviews: serviceProvider?.totalReviews || 0,
+        availability: serviceProvider?.availability || { days: [], hours: { start: '', end: '' } },
+        serviceArea: { 
+          radiusInKm: serviceProvider?.serviceAreaRadius || 0, 
+          baseLocation: serviceProvider?.serviceAreaCenter || { type: 'Point', coordinates: [0, 0] }
+        }, 
+        location, 
+        walletBalance, 
+        status, 
+        createdAt, 
+        updatedAt, 
+        __v: 0 
+      });
+    }
+    
+    // Admin or other roles
+    const { id, email, firstName, lastName, phone, role, isEmailVerified, isPhoneVerified, profileImage, location, walletBalance, status, createdAt, updatedAt } = user;
+    return res.json({ 
+      _id: id, 
+      email, 
+      firstName, 
+      lastName, 
+      phone, 
+      role, 
+      isEmailVerified, 
+      isPhoneVerified, 
+      profileImage, 
+      location, 
+      walletBalance, 
+      status, 
+      createdAt, 
+      updatedAt, 
+      __v: 0 
+    });
   } catch (error) {
     console.error(error);
     res.status(500).json({ message: 'Server error' });

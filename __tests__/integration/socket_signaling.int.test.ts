@@ -1,5 +1,5 @@
 import http from 'http';
-import mongoose from 'mongoose';
+// import mongoose from 'mongoose'; // Removed - using Prisma now
 import { MongoMemoryServer } from 'mongodb-memory-server';
 // socket.io-client typings export shapes can vary depending on moduleInterop; import dynamically
 import * as ClientLib from 'socket.io-client';

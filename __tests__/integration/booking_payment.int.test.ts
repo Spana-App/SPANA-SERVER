@@ -1,4 +1,4 @@
-import mongoose from 'mongoose';
+// import mongoose from 'mongoose'; // Removed - using Prisma now
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import request from 'supertest';
 

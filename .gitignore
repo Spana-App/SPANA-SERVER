@@ -3,3 +3,4 @@ what./node_modules
 node_modules/
 jest.config.js
 jest.setup.ts
+/generated/prisma

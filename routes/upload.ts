@@ -6,7 +6,7 @@ const path = require('path');
 const fs = require('fs');
 const auth = require('../middleware/auth');
 const authorize = require('../middleware/roles');
-const User = require('../models/User');
+const prisma = require('../lib/database').default;
 
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
@@ -35,7 +35,9 @@ if (!fs.existsSync('uploads')) fs.mkdirSync('uploads');
 // Upload profile image
 router.post('/profile', auth, imageUpload.single('avatar'), async (req, res) => {
   try {
-    const user = await User.findById(req.user.id);
+    const user = await prisma.user.findUnique({
+      where: { id: req.user.id }
+    });
     if (!user) return res.status(404).json({ message: 'User not found' });
     user.profileImage = `/uploads/${req.file.filename}`;
     await user.save();
@@ -60,7 +62,9 @@ const docUpload = multer({
 
 router.post('/documents', auth, docUpload.array('documents', 5), async (req, res) => {
   try {
-    const user = await User.findById(req.user.id);
+    const user = await prisma.user.findUnique({
+      where: { id: req.user.id }
+    });
     if (!user) return res.status(404).json({ message: 'User not found' });
     if (user.role !== 'service provider') return res.status(403).json({ message: 'Not authorized' });
     const docs = (req.files || []).map(f => ({ type: 'document', url: `/uploads/${f.filename}`, verified: false }));
@@ -81,7 +85,9 @@ router.post('/documents/:docId/verify', auth, authorize('admin', 'System_admin')
     const { userId, verified } = req.body;
     const { docId } = req.params;
     if (!userId) return res.status(400).json({ message: 'userId is required' });
-    const user = await User.findById(userId);
+    const user = await prisma.user.findUnique({
+      where: { id: userId }
+    });
     if (!user) return res.status(404).json({ message: 'User not found' });
     if (user.role !== 'service provider') return res.status(400).json({ message: 'Target user is not a provider' });
 
@@ -104,7 +110,9 @@ router.post('/documents/:docId/verify', auth, authorize('admin', 'System_admin')
 router.delete('/documents/:docId', auth, async (req, res) => {
   try {
     const { docId } = req.params;
-    const user = await User.findById(req.user.id);
+    const user = await prisma.user.findUnique({
+      where: { id: req.user.id }
+    });
     if (!user) return res.status(404).json({ message: 'User not found' });
     if (user.role !== 'service provider') return res.status(403).json({ message: 'Not authorized' });
 

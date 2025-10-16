@@ -1,6 +1,6 @@
 require('dotenv').config();
 import express from 'express';
-const mongoose = require('mongoose');
+import prisma, { pool } from './lib/database';
 const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
@@ -106,23 +106,35 @@ const initSocket = (server: any) => {
     });
 
     // Chat messages within booking room
-    socket.on('booking-chat', ({ bookingId, message }: any) => {
+    socket.on('booking-chat', async ({ bookingId, message }: any) => {
       if (bookingId && message) {
         // persist chat message asynchronously
         try {
-          const Message = require('./models/Message');
-          Message.create({ bookingId, fromUser: socket.userId || null, message, toUser: null, createdAt: new Date() }).catch(() => {});
+          await prisma.message.create({
+            data: {
+              bookingId,
+              senderId: socket.userId || '',
+              content: message,
+              receiverId: ''
+            }
+          });
         } catch (_) {}
         io.to(`booking:${bookingId}`).emit('booking-chat', { from: socket.userId, message, ts: Date.now() });
       }
     });
 
     // Generic chat message (user-to-user)
-    socket.on('chat-message', ({ toUserId, message }: any) => {
+    socket.on('chat-message', async ({ toUserId, message }: any) => {
       if (!toUserId || !message) return;
       try {
-        const Message = require('./models/Message');
-        Message.create({ bookingId: null, fromUser: socket.userId || null, message, toUser: toUserId, createdAt: new Date() }).catch(() => {});
+        await prisma.message.create({
+          data: {
+            bookingId: null,
+            senderId: socket.userId || '',
+            content: message,
+            receiverId: toUserId
+          }
+        });
       } catch (_) {}
       io.to(toUserId).emit('chat-message', { from: socket.userId, message, ts: Date.now() });
     });
@@ -221,32 +233,15 @@ app.use(express.urlencoded({ extended: true }));
 
 // Database connection: only connect when running the server directly
 if (require.main === module) {
-  mongoose.connect(process.env.MONGODB_URI || '', {
-    useNewUrlParser: true,
-    useUnifiedTopology: true,
-    serverSelectionTimeoutMS: 5000,
-    socketTimeoutMS: 45000,
-  } as any)
-  .then(() => {
-    console.log(chalk.green('✅  MongoDB connected successfully'));
-  })
-  .catch((err: any) => {
-    console.error(chalk.red('❌  MongoDB connection error:'), err);
-    // don't exit here in case we run in test environment
-  });
-
-  // MongoDB connection event handlers
-  mongoose.connection.on('connected', () => {
-    console.log(chalk.cyan('📊  Mongoose connected to MongoDB'));
-  });
-
-  mongoose.connection.on('error', (err: any) => {
-    console.error(chalk.red('❌  Mongoose connection error:'), err);
-  });
-
-  mongoose.connection.on('disconnected', () => {
-    console.log(chalk.yellow('⚠️   Mongoose disconnected from MongoDB'));
-  });
+  // Test PostgreSQL connection
+  prisma.$connect()
+    .then(() => {
+      console.log(chalk.green('✅  PostgreSQL connected successfully'));
+    })
+    .catch((err: any) => {
+      console.error(chalk.red('❌  PostgreSQL connection error:'), err);
+      // don't exit here in case we run in test environment
+    });
 }
 
 // Add caching middleware for GET requests using cache abstraction or Redis if enabled
@@ -288,15 +283,41 @@ app.use('/notifications', notificationRoutes);
 app.use('/activities', activityRoutes);
 app.use('/uploads', uploadRoutes);
 app.use('/workflows', workflowRoutes);
+app.use('/email-verification', require('./routes/emailVerification'));
 
 // Health check endpoint with Redis status
 app.get('/health', async (req: any, res: any) => {
+  let dbStatus = 'disconnected';
+  let poolStatus = 'disconnected';
+  
+  try {
+    // Test Prisma connection
+    await prisma.$queryRaw`SELECT 1`;
+    dbStatus = 'connected';
+  } catch (err) {
+    dbStatus = 'disconnected';
+  }
+
+  try {
+    // Test PostgreSQL pool connection
+    const result = await pool.query('SELECT NOW()');
+    poolStatus = 'connected';
+  } catch (err) {
+    poolStatus = 'disconnected';
+  }
+
   const healthCheck = {
     status: 'OK',
     timestamp: new Date().toISOString(),
     uptime: process.uptime(),
     memory: process.memoryUsage(),
-    database: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
+    database: dbStatus,
+    postgresPool: poolStatus,
+    poolStats: {
+      totalCount: pool.totalCount,
+      idleCount: pool.idleCount,
+      waitingCount: pool.waitingCount
+    },
     redis: USE_REDIS ? (redisClient && (redisClient as any).connected ? 'connected' : 'disconnected') : 'disabled'
   } as any;
   
@@ -306,6 +327,14 @@ app.get('/health', async (req: any, res: any) => {
 
 // Detailed health check endpoint
 app.get('/health/detailed', async (req: any, res: any) => {
+  let dbStatus = 'disconnected';
+  try {
+    await prisma.$queryRaw`SELECT 1`;
+    dbStatus = 'connected';
+  } catch (err) {
+    dbStatus = 'disconnected';
+  }
+
   const healthCheck: any = {
     status: 'OK',
     timestamp: new Date().toISOString(),
@@ -316,13 +345,13 @@ app.get('/health/detailed', async (req: any, res: any) => {
     platform: os.platform(),
     arch: os.arch(),
     hostname: os.hostname(),
-    database: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
+    database: dbStatus,
     redis: USE_REDIS ? (redisClient && (redisClient as any).connected ? 'connected' : 'disconnected') : 'disabled',
     environment: process.env.NODE_ENV,
     version: process.env.APP_VERSION || 'unknown'
   };
 
-  if (mongoose.connection.readyState !== 1) {
+  if (dbStatus !== 'connected') {
     healthCheck.status = 'ERROR';
     healthCheck.database = 'disconnected';
     console.log(chalk.red('❌  Detailed health check failed - DB disconnected'));
@@ -382,7 +411,16 @@ if (require.main === module) {
       try {
         const version = process.env.APP_VERSION || 'unknown';
         const redisStatus = USE_REDIS ? (redisClient && (redisClient as any).connected ? 'connected' : 'disconnected') : 'disabled';
-        const dbState = ['disconnected','connected','connecting','disconnecting'][(mongoose.connection.readyState as any)] || String(mongoose.connection.readyState);
+        
+        // Check database status
+        let dbState = 'disconnected';
+        try {
+          await prisma.$queryRaw`SELECT 1`;
+          dbState = 'connected';
+        } catch (err) {
+          dbState = 'disconnected';
+        }
+        
         const mem = process.memoryUsage();
         const load = os.loadavg();
 
@@ -390,11 +428,11 @@ if (require.main === module) {
         console.log(' App version:   ', version);
         console.log(' Node:          ', process.version);
         console.log(' Env:           ', process.env.NODE_ENV);
-        console.log(' Mongo state:   ', dbState);
+        console.log(' PostgreSQL:    ', dbState);
         console.log(' Redis:         ', redisStatus);
         console.log(' Memory (MB):   ', `rss=${(mem.rss/1048576).toFixed(1)} heapUsed=${(mem.heapUsed/1048576).toFixed(1)}`);
         console.log(' Load avg:      ', load.map(n => n.toFixed(2)).join(', '));
-        console.log(' Routes:        ', ['/auth','/users','/services','/bookings','/payments','/notifications','/activities','/uploads'].join(' '));
+        console.log(' Routes:        ', ['/auth','/users','/services','/bookings','/payments','/notifications','/activities','/uploads','/email-verification'].join(' '));
 
         const mailProvider = (process.env.MAIL_PROVIDER || 'smtp').toLowerCase();
         const mailEnabled = String(process.env.MAIL_ENABLED || 'true').toLowerCase() === 'true';
@@ -453,9 +491,14 @@ const gracefulShutdown = async () => {
       });
     }
 
-    if (mongoose && mongoose.connection) {
-      await mongoose.connection.close();
-      console.log(chalk.green('✅  MongoDB connection closed'));
+    if (prisma) {
+      await prisma.$disconnect();
+      console.log(chalk.green('✅  Prisma connection closed'));
+    }
+
+    if (pool) {
+      await pool.end();
+      console.log(chalk.green('✅  PostgreSQL pool closed'));
     }
 
     if (redisClient) {

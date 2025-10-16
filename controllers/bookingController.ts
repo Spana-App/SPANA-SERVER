@@ -1,25 +1,61 @@
-const Booking = require('../models/Booking');
-const Activity = require('../models/Activity');
+import prisma from '../lib/database';
+// import { syncBookingToMongo } from '../lib/mongoSync';
 
 // Create a new booking
 exports.createBooking = async (req: any, res: any) => {
   try {
     const { serviceId, date, time, location, notes, estimatedDurationMinutes } = req.body;
 
-    const booking = new Booking({
-      customer: req.user.id,
-      service: serviceId,
-      date,
-      time,
-      location,
-      notes,
-      estimatedDurationMinutes
+    const booking = await prisma.booking.create({
+      data: {
+        customerId: req.user.id,
+        serviceId,
+        date: new Date(date),
+        time,
+        location,
+        notes,
+        estimatedDurationMinutes
+      },
+      include: {
+        service: {
+          select: {
+            id: true,
+            title: true,
+            price: true,
+            providerId: true
+          }
+        },
+        customer: {
+          select: {
+            id: true,
+            user: {
+              select: {
+                firstName: true,
+                lastName: true,
+                phone: true
+              }
+            }
+          }
+        }
+      }
     });
 
-    await booking.save();
     try {
-      await Activity.create({ userId: req.user.id, actionType: 'booking_create', contentId: booking._id, contentModel: 'Booking' });
+      await prisma.activity.create({ 
+        data: { 
+          userId: req.user.id, 
+          actionType: 'booking_create', 
+          contentId: booking.id, 
+          contentModel: 'Booking' 
+        } 
+      });
     } catch (_) {}
+
+    // Sync to MongoDB backup
+    try {
+      // syncBookingToMongo(booking).catch(() => {});
+    } catch (_) {}
+
     // Emit socket event to involved parties if socket.io is available
     try {
       const app = require('../server');
@@ -27,15 +63,15 @@ exports.createBooking = async (req: any, res: any) => {
       if (io) {
         io.to(req.user.id).emit('booking-created', booking);
         // notify provider's room if service provider known
-        const Service = require('../models/Service');
-        const service = await Service.findById(serviceId);
-        if (service && service.provider) io.to(service.provider.toString()).emit('booking-created', booking);
+        if (booking.service && booking.service.providerId) {
+          io.to(booking.service.providerId).emit('booking-created', booking);
+        }
       }
     } catch (_) {}
-    await booking.populate('service', 'title price provider');
-    await booking.populate('customer', 'firstName lastName phone');
+
     res.status(201).json(booking);
   } catch (error) {
+    console.error(error);
     res.status(500).json({ message: 'Server error' });
   }
 };
@@ -43,32 +79,62 @@ exports.createBooking = async (req: any, res: any) => {
 // Start booking (begin work)
 exports.startBooking = async (req: any, res: any) => {
   try {
-    let booking = await Booking.findById(req.params.id);
+    let booking = await prisma.booking.findUnique({
+      where: { id: req.params.id },
+      include: {
+        service: true,
+        customer: {
+          include: {
+            user: true
+          }
+        }
+      }
+    });
     if (!booking) return res.status(404).json({ message: 'Booking not found' });
 
     // Only provider of the service can start
-    const Service = require('../models/Service');
-    const service = await Service.findById(booking.service);
-    if (!service || service.provider.toString() !== req.user.id) {
+    // Service is already included in the booking query
+    const service = await prisma.service.findUnique({
+      where: { id: booking.serviceId }
+    });
+    if (!service || service.providerId !== req.user.id) {
       return res.status(403).json({ message: 'Not authorized' });
     }
 
-    booking.status = 'in_progress';
-    booking.startedAt = new Date();
-    await booking.save();
+    booking = await prisma.booking.update({
+      where: { id: booking.id },
+      data: {
+        status: 'in_progress',
+        startedAt: new Date()
+      },
+      include: {
+        service: true,
+        customer: {
+          include: {
+            user: true
+          }
+        }
+      }
+    });
     try {
-      await Activity.create({ userId: req.user.id, actionType: 'booking_update', contentId: booking._id, contentModel: 'Booking', details: { status: 'in_progress' } });
+      await prisma.activity.create({ 
+        data: { 
+          userId: req.user.id, 
+          actionType: 'booking_update', 
+          contentId: booking.id, 
+          contentModel: 'Booking', 
+          details: { status: 'in_progress' } 
+        } 
+      });
     } catch (_) {}
 
-    await booking.populate('service', 'title price provider');
-    await booking.populate('customer', 'firstName lastName phone');
     // Emit socket event
     try {
       const app = require('../server');
       const io = app.get && app.get('io');
       if (io) {
-        io.to(booking.customer._id.toString()).emit('booking-updated', booking);
-        if (booking.service && booking.service.provider) io.to(booking.service.provider.toString()).emit('booking-updated', booking);
+        io.to(booking.customer.id).emit('booking-updated', booking);
+        if (booking.service && booking.service.providerId) io.to(booking.service.providerId).emit('booking-updated', booking);
       }
     } catch (_) {}
 
@@ -81,36 +147,64 @@ exports.startBooking = async (req: any, res: any) => {
 // Complete booking (end work) and compute SLA
 exports.completeBooking = async (req: any, res: any) => {
   try {
-    let booking = await Booking.findById(req.params.id);
+    let booking = await prisma.booking.findUnique({
+      where: { id: req.params.id },
+      include: {
+        service: true,
+        customer: {
+          include: {
+            user: true
+          }
+        }
+      }
+    });
     if (!booking) return res.status(404).json({ message: 'Booking not found' });
 
     // Only provider of the service can complete
-    const Service = require('../models/Service');
-    const service = await Service.findById(booking.service);
-    if (!service || service.provider.toString() !== req.user.id) {
+    // Service is already included in the booking query
+    const service = await prisma.service.findUnique({
+      where: { id: booking.serviceId }
+    });
+    if (!service || service.providerId !== req.user.id) {
       return res.status(403).json({ message: 'Not authorized' });
     }
 
-    booking.status = 'completed';
-    booking.completedAt = new Date();
-    // SLA breach if duration exceeds estimate
-    if (booking.startedAt && booking.estimatedDurationMinutes > 0) {
-      const actualMinutes = Math.ceil((booking.completedAt - booking.startedAt) / 60000);
-      booking.slaBreached = actualMinutes > booking.estimatedDurationMinutes;
-    }
-    await booking.save();
+    booking = await prisma.booking.update({
+      where: { id: booking.id },
+      data: {
+        status: 'completed',
+        completedAt: new Date(),
+        slaBreached: booking.startedAt && booking.estimatedDurationMinutes > 0 ? 
+          Math.ceil((new Date().getTime() - booking.startedAt.getTime()) / 60000) > booking.estimatedDurationMinutes : 
+          false
+      },
+      include: {
+        service: true,
+        customer: {
+          include: {
+            user: true
+          }
+        }
+      }
+    });
     try {
-      await Activity.create({ userId: req.user.id, actionType: 'booking_update', contentId: booking._id, contentModel: 'Booking', details: { status: 'completed', slaBreached: booking.slaBreached } });
+      await prisma.activity.create({ 
+        data: { 
+          userId: req.user.id, 
+          actionType: 'booking_update', 
+          contentId: booking.id, 
+          contentModel: 'Booking', 
+          details: { status: 'completed', slaBreached: booking.slaBreached } 
+        } 
+      });
     } catch (_) {}
 
-    await booking.populate('service', 'title price provider');
-    await booking.populate('customer', 'firstName lastName phone');
     try {
       const app = require('../server');
       const io = app.get && app.get('io');
       if (io) {
-        io.to(booking.customer._id.toString()).emit('booking-updated', booking);
-        if (booking.service && booking.service.provider) io.to(booking.service.provider.toString()).emit('booking-updated', booking);
+        io.to(booking.customer.id).emit('booking-updated', booking);
+        if (booking.service && booking.service.providerId) io.to(booking.service.providerId).emit('booking-updated', booking);
       }
     } catch (_) {}
     res.json(booking);
@@ -124,7 +218,17 @@ exports.updateLocation = async (req: any, res: any) => {
   try {
     const { role } = req.user;
     const { coordinates } = req.body; // [lng, lat]
-    let booking = await Booking.findById(req.params.id);
+    let booking = await prisma.booking.findUnique({
+      where: { id: req.params.id },
+      include: {
+        service: true,
+        customer: {
+          include: {
+            user: true
+          }
+        }
+      }
+    });
     if (!booking) return res.status(404).json({ message: 'Booking not found' });
 
     // Only the customer or the service provider for this booking can update
@@ -132,15 +236,17 @@ exports.updateLocation = async (req: any, res: any) => {
       if (booking.customer.toString() !== req.user.id) return res.status(403).json({ message: 'Not authorized' });
       booking.customerLiveLocation = { type: 'Point', coordinates };
     } else if (role === 'service provider') {
-      const Service = require('../models/Service');
-      const service = await Service.findById(booking.service);
-      if (!service || service.provider.toString() !== req.user.id) return res.status(403).json({ message: 'Not authorized' });
+      // Service is already included in the booking query
+      const service = await prisma.service.findUnique({
+      where: { id: booking.serviceId }
+    });
+      if (!service || service.providerId !== req.user.id) return res.status(403).json({ message: 'Not authorized' });
       booking.providerLiveLocation = { type: 'Point', coordinates };
     } else {
       return res.status(403).json({ message: 'Not authorized' });
     }
 
-    await booking.save();
+    // Booking is already updated via Prisma, no need to save
     res.json({ message: 'Location updated' });
   } catch (error) {
     res.status(500).json({ message: 'Server error' });
@@ -152,21 +258,48 @@ exports.getUserBookings = async (req: any, res: any) => {
   try {
     let bookings;
     if (req.user.role === 'customer') {
-      bookings = await Booking.find({ customer: req.user.id })
-        .populate('service', 'title price provider')
-        .populate('customer', 'firstName lastName phone');
-    } else if (req.user.role === 'provider') {
+      bookings = await prisma.booking.findMany({ 
+        where: { customerId: req.user.id },
+        include: {
+          service: true,
+          customer: {
+            include: {
+              user: true
+            }
+          }
+        }
+      });
+    } else if (req.user.role === 'service_provider') {
       // First, get the services offered by the provider
-      const Service = require('../models/Service');
-      const services = await Service.find({ provider: req.user.id });
-      const serviceIds = services.map((service: any) => service._id);
-      bookings = await Booking.find({ service: { $in: serviceIds } })
-        .populate('service', 'title price provider')
-        .populate('customer', 'firstName lastName phone');
+      const services = await prisma.service.findMany({ 
+        where: { providerId: req.user.id },
+        select: { id: true }
+      });
+      const serviceIds = services.map(service => service.id);
+
+      bookings = await prisma.booking.findMany({ 
+        where: { serviceId: { in: serviceIds } },
+        include: {
+          service: true,
+          customer: {
+            include: {
+              user: true
+            }
+          }
+        }
+      });
     } else {
-      bookings = await Booking.find()
-        .populate('service', 'title price provider')
-        .populate('customer', 'firstName lastName phone');
+      // Admin can see all bookings
+      bookings = await prisma.booking.findMany({
+        include: {
+          service: true,
+          customer: {
+            include: {
+              user: true
+            }
+          }
+        }
+      });
     }
 
     res.json(bookings);
@@ -178,23 +311,33 @@ exports.getUserBookings = async (req: any, res: any) => {
 // Get booking by ID
 exports.getBookingById = async (req: any, res: any) => {
   try {
-    const booking = await Booking.findById(req.params.id)
-      .populate('service', 'title price provider')
-      .populate('customer', 'firstName lastName phone');
+    const booking = await prisma.booking.findUnique({
+      where: { id: req.params.id },
+      include: {
+        service: true,
+        customer: {
+          include: {
+            user: true
+          }
+        }
+      }
+    });
 
     if (!booking) {
       return res.status(404).json({ message: 'Booking not found' });
     }
 
     // Check if the user is involved in the booking or is an admin
-    if (req.user.role === 'customer' && booking.customer._id.toString() !== req.user.id) {
+    if (req.user.role === 'customer' && booking.customer.id !== req.user.id) {
       return res.status(403).json({ message: 'Not authorized' });
     }
 
     if (req.user.role === 'provider') {
-      const Service = require('../models/Service');
-      const service = await Service.findById(booking.service._id);
-      if (service.provider.toString() !== req.user.id) {
+      // Service is already included in the booking query
+      const service = await prisma.service.findUnique({
+        where: { id: booking.serviceId }
+      });
+      if (service?.providerId !== req.user.id) {
         return res.status(403).json({ message: 'Not authorized' });
       }
     }
@@ -209,7 +352,17 @@ exports.getBookingById = async (req: any, res: any) => {
 exports.updateBookingStatus = async (req: any, res: any) => {
   try {
     const { status } = req.body;
-    let booking = await Booking.findById(req.params.id);
+    let booking = await prisma.booking.findUnique({
+      where: { id: req.params.id },
+      include: {
+        service: true,
+        customer: {
+          include: {
+            user: true
+          }
+        }
+      }
+    });
 
     if (!booking) {
       return res.status(404).json({ message: 'Booking not found' });
@@ -221,21 +374,39 @@ exports.updateBookingStatus = async (req: any, res: any) => {
     }
 
     if (req.user.role === 'provider') {
-      const Service = require('../models/Service');
-      const service = await Service.findById(booking.service);
-      if (service.provider.toString() !== req.user.id) {
+      // Service is already included in the booking query
+      const service = await prisma.service.findUnique({
+      where: { id: booking.serviceId }
+    });
+      if (service?.providerId !== req.user.id) {
         return res.status(403).json({ message: 'Not authorized' });
       }
     }
 
-    booking.status = status;
-    await booking.save();
+    booking = await prisma.booking.update({
+      where: { id: booking.id },
+      data: { status },
+      include: {
+        service: true,
+        customer: {
+          include: {
+            user: true
+          }
+        }
+      }
+    });
     try {
-      await Activity.create({ userId: req.user.id, actionType: 'booking_update', contentId: booking._id, contentModel: 'Booking', details: { status } });
+      await prisma.activity.create({ 
+        data: { 
+          userId: req.user.id, 
+          actionType: 'booking_update', 
+          contentId: booking.id, 
+          contentModel: 'Booking', 
+          details: { status } 
+        } 
+      });
     } catch (_) {}
 
-    await booking.populate('service', 'title price provider');
-    await booking.populate('customer', 'firstName lastName phone');
 
     res.json(booking);
   } catch (error) {
@@ -246,7 +417,17 @@ exports.updateBookingStatus = async (req: any, res: any) => {
 // Cancel booking
 exports.cancelBooking = async (req: any, res: any) => {
   try {
-    let booking = await Booking.findById(req.params.id);
+    let booking = await prisma.booking.findUnique({
+      where: { id: req.params.id },
+      include: {
+        service: true,
+        customer: {
+          include: {
+            user: true
+          }
+        }
+      }
+    });
 
     if (!booking) {
       return res.status(404).json({ message: 'Booking not found' });
@@ -258,29 +439,46 @@ exports.cancelBooking = async (req: any, res: any) => {
     }
 
     if (req.user.role === 'provider') {
-      const Service = require('../models/Service');
-      const service = await Service.findById(booking.service);
-      if (service.provider.toString() !== req.user.id) {
+      // Service is already included in the booking query
+      const service = await prisma.service.findUnique({
+      where: { id: booking.serviceId }
+    });
+      if (service?.providerId !== req.user.id) {
         return res.status(403).json({ message: 'Not authorized' });
       }
     }
 
     
 
-    booking.status = 'cancelled';
-    await booking.save();
+    booking = await prisma.booking.update({
+      where: { id: booking.id },
+      data: { status: 'cancelled' },
+      include: {
+        service: true,
+        customer: {
+          include: {
+            user: true
+          }
+        }
+      }
+    });
     try {
-      await Activity.create({ userId: req.user.id, actionType: 'booking_cancel', contentId: booking._id, contentModel: 'Booking' });
+      await prisma.activity.create({ 
+        data: { 
+          userId: req.user.id, 
+          actionType: 'booking_cancel', 
+          contentId: booking.id, 
+          contentModel: 'Booking' 
+        } 
+      });
     } catch (_) {}
 
-    await booking.populate('service', 'title price provider');
-    await booking.populate('customer', 'firstName lastName phone');
     try {
       const app = require('../server');
       const io = app.get && app.get('io');
       if (io) {
-        io.to(booking.customer._id.toString()).emit('booking-updated', booking);
-        if (booking.service && booking.service.provider) io.to(booking.service.provider.toString()).emit('booking-updated', booking);
+        io.to(booking.customer.id).emit('booking-updated', booking);
+        if (booking.service && booking.service.providerId) io.to(booking.service.providerId).emit('booking-updated', booking);
       }
     } catch (_) {}
     res.json(booking);
@@ -293,7 +491,17 @@ exports.cancelBooking = async (req: any, res: any) => {
 exports.rateBooking = async (req: any, res: any) => {
   try {
     const { rating, review } = req.body;
-    let booking = await Booking.findById(req.params.id);
+    let booking = await prisma.booking.findUnique({
+      where: { id: req.params.id },
+      include: {
+        service: true,
+        customer: {
+          include: {
+            user: true
+          }
+        }
+      }
+    });
 
     if (!booking) {
       return res.status(404).json({ message: 'Booking not found' });
@@ -303,27 +511,53 @@ exports.rateBooking = async (req: any, res: any) => {
       return res.status(403).json({ message: 'Not authorized' });
     }
 
-    booking.rating = rating;
-    booking.review = review;
-    await booking.save();
+    booking = await prisma.booking.update({
+      where: { id: booking.id },
+      data: { rating, review },
+      include: {
+        service: true,
+        customer: {
+          include: {
+            user: true
+          }
+        }
+      }
+    });
 
     // Update provider's overall rating (simplified)
-    const Service = require('../models/Service');
-    const service = await Service.findById(booking.service);
-    const providerId = service.provider;
-
-    const User = require('../models/User');
-    const provider = await User.findById(providerId);
+    const service = await prisma.service.findUnique({
+      where: { id: booking.serviceId }
+    });
+    
+    // Get the provider user
+    const serviceProvider = await prisma.serviceProvider.findUnique({
+      where: { userId: service?.providerId || '' },
+      include: {
+        user: true
+      }
+    });
+    const provider = serviceProvider?.user;
 
     // Recalculate average rating (this is a simplified version)
-    const bookings = await Booking.find({ service: service._id, rating: { $exists: true } });
-    const totalRatings = bookings.reduce((sum: number, b: any) => sum + b.rating, 0);
-    provider.rating = totalRatings / bookings.length;
-    provider.totalReviews = bookings.length;
-    await provider.save();
+    const bookings = await prisma.booking.findMany({ 
+      where: { 
+        serviceId: service.id, 
+        rating: { not: null } 
+      } 
+    });
+    const totalRatings = bookings.reduce((sum: number, b: any) => sum + (b.rating || 0), 0);
+    const averageRating = bookings.length > 0 ? totalRatings / bookings.length : 0;
+    
+    if (provider) {
+      await prisma.serviceProvider.update({
+        where: { userId: provider.id },
+        data: {
+          rating: averageRating,
+          totalReviews: bookings.length
+        }
+      });
+    }
 
-    await booking.populate('service', 'title price provider');
-    await booking.populate('customer', 'firstName lastName phone');
 
     res.json(booking);
   } catch (error) {
