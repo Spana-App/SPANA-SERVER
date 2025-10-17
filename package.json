@@ -4,8 +4,9 @@
   "description": "Backend for Spana service marketplace app",
   "main": "server.ts",
   "scripts": {
-    "start": "ts-node server.ts",
+    "start": "node dist/server.js",
     "dev": "nodemon --watch \"**/*.ts\" --exec ts-node server.ts",
+    "build": "tsc && npx prisma generate",
     "test": "jest",
     "setup:env": "node scripts/setupEnv.js",
     "test:smtp": "npx ts-node scripts/testSmtp.ts",
@@ -14,7 +15,8 @@
     "migrate:sync": "ts-node scripts/migrateToPostgres.ts sync",
     "db:push": "npx prisma db push",
     "db:migrate": "npx prisma migrate dev",
-    "db:generate": "npx prisma generate"
+    "db:generate": "npx prisma generate",
+    "postinstall": "npx prisma generate"
   },
   "dependencies": {
     "@prisma/client": "^6.17.1",

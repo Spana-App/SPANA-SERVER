@@ -233,15 +233,26 @@ app.use(express.urlencoded({ extended: true }));
 
 // Database connection: only connect when running the server directly
 if (require.main === module) {
-  // Test PostgreSQL connection
-  prisma.$connect()
-    .then(() => {
-      console.log(chalk.green('✅  PostgreSQL connected successfully'));
-    })
-    .catch((err: any) => {
-      console.error(chalk.red('❌  PostgreSQL connection error:'), err);
-      // don't exit here in case we run in test environment
-    });
+  // Test PostgreSQL connection with retry logic
+  const connectWithRetry = async (retries = 3) => {
+    for (let i = 0; i < retries; i++) {
+      try {
+        await prisma.$connect();
+        console.log(chalk.green('✅  PostgreSQL connected successfully'));
+        return;
+      } catch (err: any) {
+        console.warn(chalk.yellow(`⚠️  PostgreSQL connection attempt ${i + 1}/${retries} failed:`), err.message);
+        if (i === retries - 1) {
+          console.error(chalk.red('❌  PostgreSQL connection failed after all retries. Server will continue without database.'));
+          console.log(chalk.yellow('💡  You can test the API endpoints, but database operations will fail.'));
+        } else {
+          await new Promise(resolve => setTimeout(resolve, 2000)); // Wait 2 seconds before retry
+        }
+      }
+    }
+  };
+  
+  connectWithRetry();
 }
 
 // Add caching middleware for GET requests using cache abstraction or Redis if enabled
@@ -395,9 +406,12 @@ app.get('/health/detailed', async (req: any, res: any) => {
 
 const PORT = process.env.PORT || 5003;
 
+// Ensure the server binds to 0.0.0.0 for Render
+const HOST = process.env.HOST || '0.0.0.0';
+
 let server: any = null;
 if (require.main === module) {
-  server = app.listen(PORT, () => {
+  server = app.listen(PORT, HOST, () => {
     console.log(chalk.green(`🚀  Server is running on port ${chalk.underline(PORT)}`));
     console.log(chalk.blue(`📊  Environment: ${chalk.bold(process.env.NODE_ENV)}`));
     console.log(chalk.cyan(`🔗  Health check available at: ${chalk.underline(`http://localhost:${PORT}/health`)}`));
