@@ -407,14 +407,15 @@ app.get('/health/detailed', async (req: any, res: any) => {
 const PORT = process.env.PORT || 5003;
 
 // Ensure the server binds to 0.0.0.0 for Render
-const HOST = process.env.HOST || '0.0.0.0';
+const HOST = process.env.NODE_ENV === 'production' ? '0.0.0.0' : 'localhost';
 
 let server: any = null;
 if (require.main === module) {
   server = app.listen(PORT, HOST, () => {
-    console.log(chalk.green(`🚀  Server is running on port ${chalk.underline(PORT)}`));
-    console.log(chalk.blue(`📊  Environment: ${chalk.bold(process.env.NODE_ENV)}`));
-    console.log(chalk.cyan(`🔗  Health check available at: ${chalk.underline(`http://localhost:${PORT}/health`)}`));
+    console.log(chalk.green(`🚀  Server is running on ${HOST}:${PORT}`));
+    console.log(chalk.blue(`📊  Environment: ${chalk.bold(process.env.NODE_ENV || 'development')}`));
+    console.log(chalk.cyan(`🔗  Health check available at: ${chalk.underline(`http://${HOST}:${PORT}/health`)}`));
+    console.log(chalk.yellow(`🌐  Server bound to: ${HOST}:${PORT}`));
 
     // Initialize Socket.io
     const io = initSocket(server);
