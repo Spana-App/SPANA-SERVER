@@ -14,6 +14,7 @@ if (process.env.STRIPE_SECRET_KEY) {
   }
 }
 
+
 // Create payment intent
 exports.createPaymentIntent = async (req, res) => {
   try {
