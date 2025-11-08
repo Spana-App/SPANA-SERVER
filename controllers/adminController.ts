@@ -1,5 +1,111 @@
 import prisma from '../lib/database';
 const nodeCrypto = require('crypto');
+const { sendVerificationEmail } = require('../config/mailer');
+
+// Helper function to get proper base URL for verification links
+function getBaseUrl(req?: any): string {
+  // Try to get from request headers first (most reliable)
+  if (req && req.headers && req.headers.host) {
+    const protocol = req.headers['x-forwarded-proto'] || (req.secure ? 'https' : 'http');
+    return `${protocol}://${req.headers.host}`;
+  }
+  
+  // Check environment variables
+  let baseUrl = process.env.CLIENT_URL || process.env.EXTERNAL_API_URL;
+  
+  // Handle '*' (CORS wildcard) or invalid URLs
+  if (!baseUrl || baseUrl === '*' || !baseUrl.startsWith('http')) {
+    // Try EXTERNAL_API_URL
+    if (process.env.EXTERNAL_API_URL && process.env.EXTERNAL_API_URL.startsWith('http')) {
+      try {
+        return new URL(process.env.EXTERNAL_API_URL).origin;
+      } catch (e) {
+        // Invalid URL, continue to fallback
+      }
+    }
+    
+    // Fallback to localhost with PORT
+    const port = process.env.PORT || '5003';
+    return `http://localhost:${port}`;
+  }
+  
+  return baseUrl.replace(/\/$/, ''); // Remove trailing slash
+}
+
+// Resend admin verification email
+exports.resendVerificationEmail = async (req: any, res: any) => {
+  try {
+    const { email } = req.body;
+
+    if (!email) {
+      return res.status(400).json({ message: 'Email is required' });
+    }
+
+    // Find user by email
+    const user = await prisma.user.findUnique({
+      where: { email: email.toLowerCase() }
+    });
+
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    // Check if it's an admin email
+    if (!email.toLowerCase().endsWith('@spana.co.za')) {
+      return res.status(400).json({ message: 'This endpoint is only for admin emails (@spana.co.za)' });
+    }
+
+    // Generate new verification token
+    const verificationToken = nodeCrypto.randomBytes(32).toString('hex');
+    await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        verificationToken,
+        verificationExpires: new Date(Date.now() + 24 * 60 * 60 * 1000) // 24 hours
+      }
+    });
+
+    // Ensure admin verification record exists
+    try {
+      await prisma.adminVerification.upsert({
+        where: { adminEmail: email.toLowerCase() },
+        update: {},
+        create: {
+          adminEmail: email.toLowerCase(),
+          verified: false
+        }
+      });
+    } catch (err) {
+      console.error('Error creating admin verification record:', err);
+    }
+
+    // Send verification email - use backend URL for admin verification
+    const baseUrl = getBaseUrl(req);
+    const verificationLink = `${baseUrl}/admin/verify?token=${verificationToken}&email=${encodeURIComponent(user.email)}`;
+    
+    try {
+      console.log(`Sending admin verification email to ${user.email}`);
+      console.log(`Verification link: ${verificationLink}`);
+      await sendVerificationEmail(user, verificationLink);
+      console.log(`Admin verification email sent successfully to ${user.email}`);
+      
+      res.json({ 
+        message: 'Verification email sent successfully. Please check your inbox (and spam folder).',
+        email: user.email,
+        expiresIn: '24 hours'
+      });
+    } catch (emailError) {
+      console.error('Error sending admin verification email:', emailError);
+      res.status(500).json({ 
+        message: 'Failed to send verification email. Please check SMTP configuration.',
+        error: emailError.message
+      });
+    }
+  } catch (error) {
+    console.error('Resend verification email error', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
 
 // Verify admin email
 exports.verifyAdmin = async (req: any, res: any) => {

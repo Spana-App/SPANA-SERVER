@@ -6,6 +6,7 @@ const authorize = require('../middleware/roles');
 
 // Admin verification
 router.get('/verify', adminController.verifyAdmin);
+router.post('/resend-verification', adminController.resendVerificationEmail);
 
 // Document verification
 router.get('/documents/pending', auth, authorize('admin'), adminController.getPendingDocuments);
