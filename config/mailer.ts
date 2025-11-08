@@ -5,7 +5,18 @@ dotenv.config();
 // Create transporter lazily to allow env to load first
 let cachedTransporter: any = null;
 
+function isSmtpEnabled() {
+  const mailProvider = (process.env.MAIL_PROVIDER || 'smtp').toLowerCase();
+  const mailEnabled = String(process.env.MAIL_ENABLED || 'true').toLowerCase() === 'true';
+  return mailEnabled && mailProvider !== 'none' && mailProvider !== 'disabled';
+}
+
 function getTransporter() {
+  // Check if SMTP is disabled
+  if (!isSmtpEnabled()) {
+    throw new Error('SMTP is disabled. Set MAIL_PROVIDER=smtp and MAIL_ENABLED=true to enable email sending.');
+  }
+
   if (cachedTransporter) return cachedTransporter;
 
   const host = process.env.SMTP_HOST;
@@ -70,13 +81,31 @@ function getTransporter() {
 }
 
 async function sendMail({ to, subject, text, html, from, attachments }: any) {
-  const transporter = getTransporter();
-  const fromAddress = from || process.env.SMTP_FROM || process.env.SMTP_USER;
-  const mailOptions: any = { from: fromAddress, to, subject };
-  if (text) mailOptions.text = text;
-  if (html) mailOptions.html = html;
-  if (attachments) mailOptions.attachments = attachments;
-  return transporter.sendMail(mailOptions);
+  // Check if SMTP is enabled before attempting to send
+  if (!isSmtpEnabled()) {
+    console.warn(`[SMTP Disabled] Email not sent to ${to}. Subject: ${subject}. Enable SMTP by setting MAIL_PROVIDER=smtp and MAIL_ENABLED=true`);
+    // Return a mock success response to prevent errors in calling code
+    return {
+      messageId: `disabled-${Date.now()}`,
+      accepted: [to],
+      rejected: [],
+      response: 'SMTP disabled - email not sent'
+    };
+  }
+
+  try {
+    const transporter = getTransporter();
+    const fromAddress = from || process.env.SMTP_FROM || process.env.SMTP_USER;
+    const mailOptions: any = { from: fromAddress, to, subject };
+    if (text) mailOptions.text = text;
+    if (html) mailOptions.html = html;
+    if (attachments) mailOptions.attachments = attachments;
+    return transporter.sendMail(mailOptions);
+  } catch (error: any) {
+    console.error('[SMTP Error] Failed to send email:', error.message);
+    // Re-throw to allow calling code to handle the error
+    throw error;
+  }
 }
 
 // Send mail with inline images (attachments with cid)
@@ -185,6 +214,123 @@ async function sendReceiptEmail({ to, toRole, amount, currency, bookingId, trans
   return sendMail({ to, subject, text, html });
 }
 
+function buildPasswordResetEmail({ name, link }: any) {
+  const subject = 'Reset Your Password - Spana';
+  const text = `Hi ${name},\n\nYou requested to reset your password. Click this link to reset: ${link}\n\nThis link expires in 1 hour.\n\nIf you didn't request this, please ignore this email.\n\nThanks,\nThe Spana Team`;
+  const html = `
+    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background-color: #f9f9f9;">
+      <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 30px; text-align: center; border-radius: 10px 10px 0 0;">
+        <h1 style="color: white; margin: 0; font-size: 28px;">Reset Your Password 🔐</h1>
+      </div>
+      <div style="background: white; padding: 30px; border-radius: 0 0 10px 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
+        <h2 style="color: #333; margin-top: 0;">Hello ${name}!</h2>
+        <p style="color: #666; line-height: 1.6; font-size: 16px;">
+          You requested to reset your password. Click the button below to create a new password.
+        </p>
+        <p style="color: #666; line-height: 1.6; font-size: 16px;">
+          This link will expire in 1 hour for your security.
+        </p>
+        <div style="text-align: center; margin: 30px 0;">
+          <a href="${link}" style="background: linear-gradient(135deg, #dc3545 0%, #c82333 100%); color: white; padding: 15px 30px; text-decoration: none; border-radius: 25px; font-weight: bold; display: inline-block; font-size: 16px;">
+            🔑 Reset Password
+          </a>
+        </div>
+        <p style="color: #999; font-size: 14px; text-align: center; margin-top: 30px;">
+          If the button doesn't work, copy and paste this link into your browser:<br>
+          <a href="${link}" style="color: #667eea; word-break: break-all;">${link}</a>
+        </p>
+        <p style="color: #ff6b6b; font-size: 14px; text-align: center; margin-top: 20px;">
+          ⚠️ If you didn't request this password reset, please ignore this email. Your password will remain unchanged.
+        </p>
+      </div>
+      <div style="text-align: center; margin-top: 20px; color: #999; font-size: 12px;">
+        <p>© 2024 Spana. All rights reserved.</p>
+      </div>
+    </div>
+  `;
+  return { subject, text, html };
+}
+
+async function sendPasswordResetEmail({ to, name, link }: any) {
+  const { subject, text, html } = buildPasswordResetEmail({ name, link });
+  return sendMail({ to, subject, text, html });
+}
+
+function buildInvoiceEmail({ name, invoiceNumber, bookingId, serviceTitle, amount, currency, jobSize, basePrice, multiplier, calculatedPrice, tipAmount, date, transactionId }: any) {
+  const subject = `Invoice ${invoiceNumber} - Spana Service`;
+  const text = `Invoice ${invoiceNumber}\n\nBooking: ${bookingId}\nService: ${serviceTitle}\nAmount: ${amount} ${currency}\nDate: ${date}`;
+  const html = `
+    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background-color: #f9f9f9;">
+      <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 30px; text-align: center; border-radius: 10px 10px 0 0;">
+        <h1 style="color: white; margin: 0; font-size: 28px;">Invoice 📄</h1>
+        <p style="color: white; margin: 5px 0 0 0; font-size: 18px;">${invoiceNumber}</p>
+      </div>
+      <div style="background: white; padding: 30px; border-radius: 0 0 10px 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
+        <h2 style="color: #333; margin-top: 0;">Hello ${name}!</h2>
+        <p style="color: #666; line-height: 1.6; font-size: 16px;">
+          Thank you for your payment. Please find your invoice details below.
+        </p>
+        <div style="background: #f8f9fa; padding: 20px; border-radius: 8px; margin: 20px 0;">
+          <table style="width: 100%; border-collapse: collapse;">
+            <tr>
+              <td style="padding: 8px 0; color: #666;"><strong>Booking ID:</strong></td>
+              <td style="padding: 8px 0; text-align: right; color: #333;">${bookingId}</td>
+            </tr>
+            <tr>
+              <td style="padding: 8px 0; color: #666;"><strong>Service:</strong></td>
+              <td style="padding: 8px 0; text-align: right; color: #333;">${serviceTitle}</td>
+            </tr>
+            <tr>
+              <td style="padding: 8px 0; color: #666;"><strong>Job Size:</strong></td>
+              <td style="padding: 8px 0; text-align: right; color: #333;">${jobSize || 'N/A'}</td>
+            </tr>
+            <tr>
+              <td style="padding: 8px 0; color: #666;"><strong>Base Price:</strong></td>
+              <td style="padding: 8px 0; text-align: right; color: #333;">${basePrice?.toFixed(2) || '0.00'} ${currency}</td>
+            </tr>
+            ${multiplier && multiplier !== 1.0 ? `
+            <tr>
+              <td style="padding: 8px 0; color: #666;"><strong>Multiplier:</strong></td>
+              <td style="padding: 8px 0; text-align: right; color: #333;">${multiplier}x</td>
+            </tr>
+            ` : ''}
+            ${tipAmount && tipAmount > 0 ? `
+            <tr>
+              <td style="padding: 8px 0; color: #666;"><strong>Tip:</strong></td>
+              <td style="padding: 8px 0; text-align: right; color: #28a745;">+${tipAmount.toFixed(2)} ${currency}</td>
+            </tr>
+            ` : ''}
+            <tr style="border-top: 2px solid #667eea; margin-top: 10px;">
+              <td style="padding: 12px 0; color: #333; font-size: 18px;"><strong>Total Amount:</strong></td>
+              <td style="padding: 12px 0; text-align: right; color: #667eea; font-size: 20px; font-weight: bold;">${amount.toFixed(2)} ${currency}</td>
+            </tr>
+            <tr>
+              <td style="padding: 8px 0; color: #666;"><strong>Transaction ID:</strong></td>
+              <td style="padding: 8px 0; text-align: right; color: #333; font-size: 12px;">${transactionId || 'N/A'}</td>
+            </tr>
+            <tr>
+              <td style="padding: 8px 0; color: #666;"><strong>Date:</strong></td>
+              <td style="padding: 8px 0; text-align: right; color: #333;">${new Date(date).toLocaleString()}</td>
+            </tr>
+          </table>
+        </div>
+        <p style="color: #999; font-size: 14px; text-align: center; margin-top: 30px;">
+          This is an automated invoice. Please keep this for your records.
+        </p>
+      </div>
+      <div style="text-align: center; margin-top: 20px; color: #999; font-size: 12px;">
+        <p>© 2024 Spana. All rights reserved.</p>
+      </div>
+    </div>
+  `;
+  return { subject, text, html };
+}
+
+async function sendInvoiceEmail({ to, name, invoiceNumber, bookingId, serviceTitle, amount, currency, jobSize, basePrice, multiplier, calculatedPrice, tipAmount, date, transactionId }: any) {
+  const { subject, text, html } = buildInvoiceEmail({ name, invoiceNumber, bookingId, serviceTitle, amount, currency, jobSize, basePrice, multiplier, calculatedPrice, tipAmount, date, transactionId });
+  return sendMail({ to, subject, text, html });
+}
+
 module.exports = {
   sendMail,
   sendWelcomeEmail,
@@ -192,8 +338,21 @@ module.exports = {
   sendVerificationEmail,
   sendEmailVerification,
   sendReceiptEmail,
+  sendPasswordResetEmail,
+  sendInvoiceEmail,
   async verifySmtp() {
     try {
+      // Check if SMTP is disabled first
+      if (!isSmtpEnabled()) {
+        return { 
+          ok: false, 
+          error: { 
+            message: 'SMTP is disabled. Set MAIL_PROVIDER=smtp and MAIL_ENABLED=true to enable.',
+            code: 'SMTP_DISABLED'
+          } 
+        };
+      }
+
       const transporter = getTransporter();
       await transporter.verify();
       return { ok: true };
@@ -204,7 +363,8 @@ module.exports = {
       if (error && error.response) details.response = error.response;
       return { ok: false, error: details };
     }
-  }
+  },
+  isSmtpEnabled
 };
 
 

@@ -3,86 +3,85 @@ import request from 'supertest';
 // Ensure predictable JWT secret for any code paths
 process.env.JWT_SECRET = process.env.JWT_SECRET || 'testsecret';
 
+// Mock middleware and controllers BEFORE any imports
+jest.mock('../middleware/auth', () => jest.fn((req: any, res: any, next: any) => { req.user = { id: 'u1', role: 'service provider' }; next(); }));
+jest.mock('../middleware/providerReady', () => jest.fn((req: any, res: any, next: any) => next()));
+jest.mock('../middleware/roles', () => {
+  return (...args: any[]) => (req: any, res: any, next: any) => next();
+});
+
+jest.mock('../controllers/serviceController', () => ({
+  getAllServices: async (req: any, res: any) => res.json([{ id: 'svc1', name: 'Test service' }]),
+  getServiceById: async (req: any, res: any) => res.json({ id: req.params.id, name: 'Service ' + req.params.id }),
+  createService: async (req: any, res: any) => res.status(201).json({ id: 'created', ...req.body }),
+  updateService: async (req: any, res: any) => res.json({ id: req.params.id, ...req.body }),
+  deleteService: async (req: any, res: any) => res.json({ success: true }),
+  getServicesByCategory: async (req: any, res: any) => res.json([{ category: req.params.category }])
+}));
+
+jest.mock('../controllers/bookingController', () => ({
+  createBooking: async (req: any, res: any) => res.status(201).json({ id: 'b1', ...req.body }),
+  acceptBookingRequest: async (req: any, res: any) => res.json({ id: req.params.id, accepted: true }),
+  declineBookingRequest: async (req: any, res: any) => res.json({ id: req.params.id, declined: true }),
+  getUserBookings: async (req: any, res: any) => res.json([{ id: 'b1' }]),
+  getBookingById: async (req: any, res: any) => res.json({ id: req.params.id }),
+  updateBookingStatus: async (req: any, res: any) => res.json({ id: req.params.id, status: req.body.status }),
+  cancelBooking: async (req: any, res: any) => res.json({ id: req.params.id, cancelled: true }),
+  rateBooking: async (req: any, res: any) => res.json({ id: req.params.id, rating: req.body.rating }),
+  rateCustomer: async (req: any, res: any) => res.json({ id: req.params.id, customerRating: req.body.customerRating }),
+  startBooking: async (req: any, res: any) => res.json({ id: req.params.id, started: true }),
+  completeBooking: async (req: any, res: any) => res.json({ id: req.params.id, completed: true }),
+  updateLocation: async (req: any, res: any) => res.json({ id: req.params.id, location: req.body })
+}));
+
+jest.mock('../controllers/paymentController', () => ({
+  createPaymentIntent: async (req: any, res: any) => res.status(201).json({ clientSecret: 'cs_test' }),
+  confirmPayment: async (req: any, res: any) => res.json({ confirmed: true }),
+  getPaymentHistory: async (req: any, res: any) => res.json([{ id: 'p1' }]),
+  refundPayment: async (req: any, res: any) => res.json({ refunded: true })
+}));
+
+// For notifications the route uses Notification model directly; mock model
+jest.mock('../models/Notification', () => ({
+  // return a chainable object where .sort(...) returns a Promise resolving to array
+  find: jest.fn().mockImplementation((q: any) => ({
+    sort: (_sortObj: any) => Promise.resolve([{ _id: 'n1', userId: q.userId, title: 'N1' }])
+  })),
+  findOne: jest.fn().mockImplementation(async (q: any) => ({ _id: q._id, userId: q.userId, status: 'unread', save: async function() { this.status = 'read'; return this; } }))
+}));
+
+// Activity model used directly in activities route
+jest.mock('../models/Activity', () => ({
+  // Activity.find(...).sort(...).limit(...) => Promise<array>
+  find: jest.fn().mockImplementation((q: any) => ({
+    sort: (_s: any) => ({
+      limit: (_limit: any) => Promise.resolve([{ id: 'a1', actionType: 'login' }])
+    })
+  }))
+}));
+
+// Mock userController
+jest.mock('../controllers/userController', () => ({
+  getAllUsers: async (req: any, res: any) => res.json([{ id: 'u1' }]),
+  getUserById: async (req: any, res: any) => res.json({ id: req.params.id }),
+  updateUser: async (req: any, res: any) => res.json({ id: req.params.id, ...req.body }),
+  deleteUser: async (req: any, res: any) => res.json({ deleted: true }),
+  getAllProviders: async (req: any, res: any) => res.json([{ id: 'prov1' }]),
+  getProvidersByService: async (req: any, res: any) => res.json([{ serviceCategory: req.params.serviceCategory }]),
+  verifyProvider: async (req: any, res: any) => res.json({ verified: true })
+}));
+
+// Mock upload route dependencies for document endpoints (User model used there)
+jest.mock('../models/User', () => ({
+  findById: jest.fn().mockImplementation(async (id: any) => ({
+    _id: id,
+    role: 'service provider',
+    documents: [],
+    save: jest.fn().mockResolvedValue(true)
+  }))
+}));
+
 async function loadAppWithAllMocks() {
-  jest.resetModules();
-
-  // Mock middleware: auth, providerReady, roles
-  jest.doMock('../middleware/auth', () => jest.fn((req: any, res: any, next: any) => { req.user = { id: 'u1', role: 'service provider' }; next(); }));
-  jest.doMock('../middleware/providerReady', () => jest.fn((req: any, res: any, next: any) => next()));
-  // roles is a function returning middleware; return a function that allows
-  jest.doMock('../middleware/roles', () => {
-    return (...args: any[]) => (req: any, res: any, next: any) => next();
-  });
-
-  // Mock controllers with simple predictable responses
-  jest.doMock('../controllers/serviceController', () => ({
-    getAllServices: async (req: any, res: any) => res.json([{ id: 'svc1', name: 'Test service' }]),
-    getServiceById: async (req: any, res: any) => res.json({ id: req.params.id, name: 'Service ' + req.params.id }),
-    createService: async (req: any, res: any) => res.status(201).json({ id: 'created', ...req.body }),
-    updateService: async (req: any, res: any) => res.json({ id: req.params.id, ...req.body }),
-    deleteService: async (req: any, res: any) => res.json({ success: true }),
-    getServicesByCategory: async (req: any, res: any) => res.json([{ category: req.params.category }])
-  }));
-
-  jest.doMock('../controllers/bookingController', () => ({
-    createBooking: async (req: any, res: any) => res.status(201).json({ id: 'b1', ...req.body }),
-    getUserBookings: async (req: any, res: any) => res.json([{ id: 'b1' }]),
-    getBookingById: async (req: any, res: any) => res.json({ id: req.params.id }),
-    updateBookingStatus: async (req: any, res: any) => res.json({ id: req.params.id, status: req.body.status }),
-    cancelBooking: async (req: any, res: any) => res.json({ id: req.params.id, cancelled: true }),
-    rateBooking: async (req: any, res: any) => res.json({ id: req.params.id, rating: req.body.rating }),
-    startBooking: async (req: any, res: any) => res.json({ id: req.params.id, started: true }),
-    completeBooking: async (req: any, res: any) => res.json({ id: req.params.id, completed: true }),
-    updateLocation: async (req: any, res: any) => res.json({ id: req.params.id, location: req.body })
-  }));
-
-  jest.doMock('../controllers/paymentController', () => ({
-    createPaymentIntent: async (req: any, res: any) => res.status(201).json({ clientSecret: 'cs_test' }),
-    confirmPayment: async (req: any, res: any) => res.json({ confirmed: true }),
-    getPaymentHistory: async (req: any, res: any) => res.json([{ id: 'p1' }]),
-    refundPayment: async (req: any, res: any) => res.json({ refunded: true })
-  }));
-
-  // For notifications the route uses Notification model directly; mock model
-  jest.doMock('../models/Notification', () => ({
-    // return a chainable object where .sort(...) returns a Promise resolving to array
-    find: jest.fn().mockImplementation((q: any) => ({
-      sort: (_sortObj: any) => Promise.resolve([{ _id: 'n1', userId: q.userId, title: 'N1' }])
-    })),
-    findOne: jest.fn().mockImplementation(async (q: any) => ({ _id: q._id, userId: q.userId, status: 'unread', save: async function() { this.status = 'read'; return this; } }))
-  }));
-
-  // Activity model used directly in activities route
-  jest.doMock('../models/Activity', () => ({
-    // Activity.find(...).sort(...).limit(...) => Promise<array>
-    find: jest.fn().mockImplementation((q: any) => ({
-      sort: (_s: any) => ({
-        limit: (_limit: any) => Promise.resolve([{ id: 'a1', actionType: 'login' }])
-      })
-    }))
-  }));
-
-  // Mock userController
-  jest.doMock('../controllers/userController', () => ({
-    getAllUsers: async (req: any, res: any) => res.json([{ id: 'u1' }]),
-    getUserById: async (req: any, res: any) => res.json({ id: req.params.id }),
-    updateUser: async (req: any, res: any) => res.json({ id: req.params.id, ...req.body }),
-    deleteUser: async (req: any, res: any) => res.json({ deleted: true }),
-    getAllProviders: async (req: any, res: any) => res.json([{ id: 'prov1' }]),
-    getProvidersByService: async (req: any, res: any) => res.json([{ serviceCategory: req.params.serviceCategory }]),
-    verifyProvider: async (req: any, res: any) => res.json({ verified: true })
-  }));
-
-  // Mock upload route dependencies for document endpoints (User model used there)
-  jest.doMock('../models/User', () => ({
-    findById: jest.fn().mockImplementation(async (id: any) => ({
-      _id: id,
-      role: 'service provider',
-      documents: [],
-      save: jest.fn().mockResolvedValue(true)
-    }))
-  }));
-
   // Now require the app after setting mocks
   const app = require('../server');
   return app;

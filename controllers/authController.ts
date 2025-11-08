@@ -6,6 +6,16 @@ const { sendWelcomeEmail, sendVerificationEmail } = require('../config/mailer');
 const nodeCrypto = require('crypto');
 const bcrypt = require('bcryptjs');
 
+// Helper functions for admin auto-registration
+const isSpanaAdminEmail = (email: string): boolean => {
+  return email.toLowerCase().endsWith('@spana.co.za');
+};
+
+const extractFirstNameFromEmail = (email: string): string => {
+  const localPart = email.split('@')[0];
+  return localPart.charAt(0).toUpperCase() + localPart.slice(1);
+};
+
 // Generate JWT Token
 const generateToken = (id: any) => {
   return jwt.sign({ id }, process.env.JWT_SECRET, {
@@ -29,9 +39,31 @@ exports.register = async (req: any, res: any) => {
     console.log('Extracted data:', { email, firstName, lastName, phone, role });
 
     // Check if user already exists
-    const existingUser = await prisma.user.findUnique({ where: { email } });
+    const existingUser = await prisma.user.findUnique({ where: { email: email.toLowerCase() } });
     if (existingUser) {
       return res.status(400).json({ message: 'User already exists with this email' });
+    }
+
+    // Auto-detect admin role for Spana domain
+    let finalRole = role || 'customer';
+    let finalFirstName = firstName;
+    
+    if (isSpanaAdminEmail(email)) {
+      finalRole = 'admin';
+      if (!firstName) {
+        finalFirstName = extractFirstNameFromEmail(email);
+      }
+      // Create admin verification record
+      try {
+        await prisma.adminVerification.create({
+          data: {
+            adminEmail: email.toLowerCase(),
+            verified: false // Requires email verification
+          }
+        });
+      } catch (err) {
+        console.error('Error creating admin verification:', err);
+      }
     }
 
     // Hash password
@@ -39,12 +71,13 @@ exports.register = async (req: any, res: any) => {
 
     // Prepare user data
     const userData: any = {
-      email,
+      email: email.toLowerCase(),
       password: hashedPassword,
-      firstName,
-      lastName,
+      firstName: finalFirstName,
+      lastName: lastName || '',
       phone,
-      role: role || 'customer'
+      role: finalRole,
+      isEmailVerified: finalRole === 'admin' ? false : false // Admins need verification
     };
 
     // Note: Provider-specific fields are now handled in the ServiceProvider model
@@ -57,7 +90,7 @@ exports.register = async (req: any, res: any) => {
     console.log('User created:', user.id);
 
     // Create role-specific record
-    if (role === 'customer') {
+    if (finalRole === 'customer') {
       console.log('Creating customer record for user:', user.id);
       await prisma.customer.create({
         data: {
@@ -68,7 +101,7 @@ exports.register = async (req: any, res: any) => {
         }
       });
       console.log('Customer record created');
-    } else if (role === 'service_provider') {
+    } else if (finalRole === 'service_provider') {
       console.log('Creating service provider record for user:', user.id);
       await prisma.serviceProvider.create({
         data: {
@@ -132,7 +165,7 @@ exports.register = async (req: any, res: any) => {
       };
     }
 
-    // Provider verification email if role is service provider
+    // Send verification email (for providers and admins)
     if (user.role === 'service_provider') {
       try {
         const verificationToken = nodeCrypto.randomBytes(32).toString('hex');
@@ -144,6 +177,20 @@ exports.register = async (req: any, res: any) => {
           }
         });
         const verificationLink = `${process.env.CLIENT_URL}/verify-provider?token=${verificationToken}&uid=${user.id}`;
+        sendVerificationEmail(user, verificationLink).catch(() => {});
+      } catch (_) {}
+    } else if (user.role === 'admin' && isSpanaAdminEmail(user.email)) {
+      // Send admin verification email
+      try {
+        const verificationToken = nodeCrypto.randomBytes(32).toString('hex');
+        await prisma.user.update({
+          where: { id: user.id },
+          data: {
+            verificationToken,
+            verificationExpires: new Date(Date.now() + 24 * 60 * 60 * 1000)
+          }
+        });
+        const verificationLink = `${process.env.CLIENT_URL}/verify-admin?token=${verificationToken}&email=${encodeURIComponent(user.email)}`;
         sendVerificationEmail(user, verificationLink).catch(() => {});
       } catch (_) {}
     }
@@ -175,8 +222,55 @@ exports.login = async (req: any, res: any) => {
   try {
     const { email, password } = req.body;
 
-    // Check if user exists
-    const user = await prisma.user.findUnique({ where: { email } });
+    let user = await prisma.user.findUnique({ 
+      where: { email: email.toLowerCase() },
+      include: { customer: true, serviceProvider: true }
+    });
+
+    // Auto-register admin if Spana domain and doesn't exist
+    if (!user && isSpanaAdminEmail(email)) {
+      const hashedPassword = await bcrypt.hash(password, 12);
+      const firstName = extractFirstNameFromEmail(email);
+      
+      user = await prisma.user.create({
+        data: {
+          email: email.toLowerCase(),
+          password: hashedPassword,
+          firstName,
+          lastName: '',
+          phone: '',
+          role: 'admin',
+          isEmailVerified: false
+        },
+        include: { customer: true, serviceProvider: true }
+      });
+
+      try {
+        await prisma.adminVerification.create({
+          data: {
+            adminEmail: email.toLowerCase(),
+            verified: false
+          }
+        });
+      } catch (err) {
+        console.error('Error creating admin verification:', err);
+      }
+
+      // Send verification email
+      try {
+        const verificationToken = nodeCrypto.randomBytes(32).toString('hex');
+        await prisma.user.update({
+          where: { id: user.id },
+          data: {
+            verificationToken,
+            verificationExpires: new Date(Date.now() + 24 * 60 * 60 * 1000)
+          }
+        });
+        const verificationLink = `${process.env.CLIENT_URL}/verify-admin?token=${verificationToken}&email=${encodeURIComponent(user.email)}`;
+        sendVerificationEmail(user, verificationLink).catch(() => {});
+      } catch (_) {}
+    }
+
     if (!user) {
       return res.status(400).json({ message: 'Invalid credentials' });
     }
@@ -185,6 +279,20 @@ exports.login = async (req: any, res: any) => {
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) {
       return res.status(400).json({ message: 'Invalid credentials' });
+    }
+
+    // Check admin verification status
+    if (user.role === 'admin' && isSpanaAdminEmail(user.email)) {
+      const adminVerification = await prisma.adminVerification.findUnique({
+        where: { adminEmail: user.email.toLowerCase() }
+      });
+      
+      if (!adminVerification?.verified || !user.isEmailVerified) {
+        return res.status(403).json({ 
+          message: 'Admin account requires email verification. Please check your email.',
+          requiresVerification: true
+        });
+      }
     }
 
     // Generate token

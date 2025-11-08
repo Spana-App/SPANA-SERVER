@@ -16,3 +16,4 @@ router.post('/verify-email', emailVerificationController.verifyEmail);
 router.get('/verification-status', auth, emailVerificationController.checkVerificationStatus);
 
 module.exports = router;
+export {};

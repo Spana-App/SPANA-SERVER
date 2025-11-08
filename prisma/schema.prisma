@@ -29,6 +29,14 @@ model User {
   verificationToken String?
   verificationExpires DateTime?
   
+  // Password reset
+  resetPasswordToken String?
+  resetPasswordExpires DateTime?
+  
+  // 2FA (for future implementation)
+  twoFactorEnabled Boolean  @default(false)
+  twoFactorSecret  String?
+  
   // Common profile fields
   profileImage      String   @default("")
   location          Json?    // { type: "Point", coordinates: [lng, lat], address: string }
@@ -57,6 +65,7 @@ model Customer {
   favouriteProviders String[] @default([])
   totalBookings     Int      @default(0)
   ratingGivenAvg    Float    @default(0)
+  ratingReceivedAvg Float    @default(0) // Average rating received from providers
   
   // Relations
   user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -116,13 +125,18 @@ model Service {
   price       Float
   duration    Int      // in minutes
   mediaUrl    String?
-  status      String   @default("active") // 'active', 'draft', 'archived'
+  status      String   @default("draft") // 'draft', 'pending_approval', 'active', 'archived'
+  adminApproved Boolean @default(false) // Admin must approve before clients can see
+  approvedBy   String?  // Admin user ID who approved
+  approvedAt   DateTime?
+  rejectionReason String? // If admin rejects
   
   // Relations
   providerId  String
   provider    ServiceProvider @relation(fields: [providerId], references: [id], onDelete: Cascade)
   bookings    Booking[]
   workflows   ServiceWorkflow[]
+  complaints  Complaint[]
   
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
@@ -138,19 +152,52 @@ model Booking {
   notes                  String?
   status                 String   @default("pending") // 'pending', 'confirmed', 'in_progress', 'completed', 'cancelled'
   
+  // Job size and pricing
+  jobSize                String?  // 'small', 'medium', 'large', 'custom'
+  basePrice              Float?   // Base service price
+  jobSizeMultiplier      Float?   @default(1.0) // Multiplier based on job size
+  calculatedPrice        Float?   // Final calculated price
+  
   // SLA tracking
   estimatedDurationMinutes Int    @default(0)
   startedAt              DateTime?
   completedAt            DateTime?
   slaBreached            Boolean  @default(false)
+  slaPenaltyAmount       Float?   @default(0) // Penalty for SLA breach
+  actualDurationMinutes  Int?    // Actual time taken
+  
+  // Proximity tracking
+  proximityDetected      Boolean  @default(false)
+  proximityDetectedAt     DateTime?
+  proximityStartTime     DateTime? // When they first got close
+  canStartJob            Boolean  @default(false) // True after 5 mins in proximity
   
   // Live tracking (for mobile app)
   providerLiveLocation   Json?    // { type: "Point", coordinates: [lng, lat] }
   customerLiveLocation   Json?    // { type: "Point", coordinates: [lng, lat] }
+  distanceApart          Float?   // Distance in meters
   
   // Rating and review
-  rating                 Int?     // 1-5
-  review                 String?
+  rating                 Int?     // 1-5 (customer rating provider)
+  review                 String?  // Customer review
+  customerRating         Int?     // 1-5 (provider rating customer)
+  customerReview         String?  // Provider review of customer
+  
+  // NEW: Request/accept flow (Uber-style)
+  requestStatus          String   @default("pending") // 'pending', 'accepted', 'declined', 'expired'
+  providerAcceptedAt     DateTime?
+  providerDeclinedAt    DateTime?
+  declineReason          String?
+  
+  // NEW: Escrow payment tracking
+  paymentStatus          String   @default("pending") // 'pending', 'paid_to_escrow', 'released_to_provider', 'refunded'
+  escrowAmount           Float?
+  commissionAmount       Float?
+  providerPayoutAmount   Float?
+  
+  // Invoice
+  invoiceNumber          String?  // Unique invoice number
+  invoiceSentAt          DateTime?
   
   // Relations
   customerId             String
@@ -160,6 +207,7 @@ model Booking {
   service                Service  @relation(fields: [serviceId], references: [id], onDelete: Cascade)
   
   payment                Payment?
+  complaints             Complaint[]
   
   createdAt              DateTime @default(now())
   updatedAt              DateTime @updatedAt
@@ -170,10 +218,19 @@ model Booking {
 model Payment {
   id            String   @id @default(cuid())
   amount        Float
-  currency      String   @default("USD")
-  paymentMethod String   // 'card', 'wallet', 'mobile_money'
+  currency      String   @default("ZAR")
+  paymentMethod String   // 'payfast', 'wallet', 'mobile_money'
   status        String   @default("pending") // 'pending', 'completed', 'failed', 'refunded'
   transactionId String?
+  
+  // NEW: Escrow fields
+  escrowStatus     String   @default("held") // 'held', 'released', 'refunded'
+  commissionRate   Float    @default(0.15) // 15% default commission
+  commissionAmount Float?
+  providerPayout   Float?
+  tipAmount        Float?   @default(0) // Optional tip from customer
+  payfastPaymentId String?  // PayFast transaction ID
+  payfastSignature String?  // PayFast signature for verification
   
   // Relations
   customerId    String
@@ -190,15 +247,20 @@ model Payment {
 
 model Document {
   id        String   @id @default(cuid())
-  type      String   // 'identity', 'license', etc.
+  type      String   // 'profile_picture', 'id_number', 'id_picture', 'license', 'certification', etc.
   url       String
   verified  Boolean  @default(false)
+  verifiedBy String? // Admin user ID who verified
+  verifiedAt DateTime?
+  rejectionReason String? // If admin rejects
+  metadata  Json?    // Additional data (e.g., ID number for type='id_number')
   
   // Relations
   providerId String
   provider   ServiceProvider @relation(fields: [providerId], references: [id], onDelete: Cascade)
   
   createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@map("documents")
 }
@@ -290,4 +352,74 @@ model Session {
   createdAt DateTime @default(now())
 
   @@map("sessions")
+}
+
+// NEW: Spana Wallet (escrow account)
+model SpanaWallet {
+  id            String   @id @default(cuid())
+  totalHeld     Float    @default(0) // Total funds in escrow
+  totalReleased Float    @default(0) // Total released to providers
+  totalCommission Float  @default(0) // Total commission earned
+  transactions  WalletTransaction[]
+  
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  
+  @@map("spana_wallet")
+}
+
+model WalletTransaction {
+  id            String   @id @default(cuid())
+  walletId      String
+  wallet        SpanaWallet @relation(fields: [walletId], references: [id], onDelete: Cascade)
+  type          String   // 'deposit', 'release', 'commission', 'refund'
+  amount        Float
+  bookingId     String?
+  paymentId     String?
+  description   String?
+  
+  createdAt     DateTime @default(now())
+  
+  @@map("wallet_transactions")
+}
+
+// NEW: Admin verification tracking
+model AdminVerification {
+  id            String   @id @default(cuid())
+  adminEmail    String   @unique
+  verified      Boolean  @default(false)
+  verifiedAt    DateTime?
+  verifiedBy    String?  // Admin ID who verified
+  
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  
+  @@map("admin_verifications")
+}
+
+// NEW: Complaint/Issue tracking
+model Complaint {
+  id            String   @id @default(cuid())
+  bookingId     String
+  booking       Booking  @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  serviceId     String?
+  service       Service? @relation(fields: [serviceId], references: [id], onDelete: SetNull)
+  
+  reportedBy   String   // User ID who reported
+  reportedByRole String // 'customer' or 'service_provider'
+  type         String   // 'service_quality', 'behavior', 'payment', 'sla_breach', 'other'
+  severity     String   @default("medium") // 'low', 'medium', 'high', 'critical'
+  title        String
+  description  String
+  status       String   @default("open") // 'open', 'investigating', 'resolved', 'dismissed'
+  resolution   String?
+  resolvedBy   String?   // Admin ID who resolved
+  resolvedAt   DateTime?
+  
+  attachments  Json?    // Array of file URLs
+  
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  
+  @@map("complaints")
 }

@@ -22,6 +22,12 @@ exports.getAllServices = async (req, res) => {
       where.category = category;
     }
 
+    // Only show admin-approved services to non-admin users
+    if (req.user?.role !== 'admin') {
+      where.adminApproved = true;
+      where.status = 'active';
+    }
+
     const services = await prisma.service.findMany({
       where,
       include: {
@@ -223,8 +229,15 @@ exports.getServicesByCategory = async (req, res) => {
   try {
     const { category } = req.params;
 
+    // Only show admin-approved services to non-admin users
+    const where: any = { category };
+    if (req.user?.role !== 'admin') {
+      where.adminApproved = true;
+      where.status = 'active';
+    }
+
     const services = await prisma.service.findMany({
-      where: { category },
+      where,
       include: {
         provider: {
           select: {

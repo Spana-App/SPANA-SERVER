@@ -4,8 +4,14 @@ const bookingController = require('../controllers/bookingController');
 const auth = require('../middleware/auth');
 const providerReady = require('../middleware/providerReady');
 
-// Create a new booking
+// Create a new booking (request)
 router.post('/', auth, bookingController.createBooking);
+
+// Accept booking request (provider)
+router.post('/:id/accept', auth, providerReady, bookingController.acceptBookingRequest);
+
+// Decline booking request (provider)
+router.post('/:id/decline', auth, providerReady, bookingController.declineBookingRequest);
 
 // Get all bookings for a user
 router.get('/', auth, bookingController.getUserBookings);
@@ -19,8 +25,11 @@ router.put('/:id/status', auth, bookingController.updateBookingStatus);
 // Cancel booking
 router.put('/:id/cancel', auth, bookingController.cancelBooking);
 
-// Rate a booking
+// Rate a booking (customer rates provider)
 router.post('/:id/rate', auth, bookingController.rateBooking);
+
+// Rate customer (provider rates customer)
+router.post('/:id/rate-customer', auth, providerReady, bookingController.rateCustomer);
 
 // Start booking (provider; profile must be complete)
 router.post('/:id/start', auth, providerReady, bookingController.startBooking);

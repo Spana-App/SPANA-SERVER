@@ -51,10 +51,13 @@ if (!databaseUrl || databaseUrl === 'postgresql://undefined:undefined@undefined:
 // Debug logging for database connection
 console.log('🔍 Database Configuration:');
 console.log('  DATABASE_URL:', process.env.DATABASE_URL ? '✅ Set' : '❌ Not set');
-console.log('  POSTGRES_HOST:', process.env.POSTGRES_HOST || '❌ Not set');
-console.log('  Full Hostname:', fullHostname);
-console.log('  POSTGRES_USER:', process.env.POSTGRES_USER || '❌ Not set');
-console.log('  POSTGRES_DB:', process.env.POSTGRES_DB || '❌ Not set');
+if (!process.env.DATABASE_URL) {
+  // Only show individual component warnings if DATABASE_URL is not set
+  console.log('  POSTGRES_HOST:', process.env.POSTGRES_HOST || '❌ Not set');
+  console.log('  Full Hostname:', fullHostname);
+  console.log('  POSTGRES_USER:', process.env.POSTGRES_USER || '❌ Not set');
+  console.log('  POSTGRES_DB:', process.env.POSTGRES_DB || '❌ Not set');
+}
 console.log('  Final URL:', databaseUrl.replace(/:[^:@]+@/, ':***@')); // Hide password in logs
 
 const prisma = globalThis.__prisma || new PrismaClient({

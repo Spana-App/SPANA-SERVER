@@ -1,57 +1,569 @@
 import prisma from '../lib/database';
 const { sendReceiptEmail } = require('../config/mailer');
 const workflowClient = require('../lib/workflowClient');
+const crypto = require('crypto');
 
-// Stripe integration: use STRIPE_SECRET_KEY when provided, otherwise fall back to simulated behavior
-let stripeClient: any = null;
-if (process.env.STRIPE_SECRET_KEY) {
-  try {
-    const Stripe = require('stripe');
-    stripeClient = new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: '2022-11-15' });
-  } catch (err) {
-    console.warn('Stripe not available:', err && err.message);
-    stripeClient = null;
-  }
+// PayFast configuration
+const PAYFAST_MERCHANT_ID = process.env.PAYFAST_MERCHANT_ID;
+const PAYFAST_MERCHANT_KEY = process.env.PAYFAST_MERCHANT_KEY;
+const PAYFAST_PASSPHRASE = process.env.PAYFAST_PASSPHRASE;
+const PAYFAST_URL = process.env.PAYFAST_URL || 'https://sandbox.payfast.co.za/eng/process';
+
+// Generate PayFast signature
+function generatePayFastSignature(data: any): string {
+  const pfParamString = Object.keys(data)
+    .filter(key => data[key] !== '' && key !== 'signature')
+    .sort()
+    .map(key => `${key}=${encodeURIComponent(data[key])}`)
+    .join('&');
+  
+  return crypto.createHash('md5').update(pfParamString + (PAYFAST_PASSPHRASE ? `&passphrase=${PAYFAST_PASSPHRASE}` : '')).digest('hex');
 }
 
 
-// Create payment intent
+// Create payment intent (PayFast)
 exports.createPaymentIntent = async (req, res) => {
   try {
-    const { bookingId, amount, currency = 'usd', paymentMethod } = req.body;
+    const { bookingId, amount, currency = 'ZAR', tipAmount = 0 } = req.body;
 
-    if (stripeClient) {
-      // Create a Stripe PaymentIntent
-      const pi = await stripeClient.paymentIntents.create({
-        amount: Math.round(Number(amount) * 100),
-        currency: currency.toLowerCase(),
-        metadata: { bookingId, userId: req.user.id },
-      });
-      return res.json({ id: pi.id, client_secret: pi.client_secret, amount, currency });
+    const booking = await prisma.booking.findUnique({
+      where: { id: bookingId },
+      include: {
+        service: {
+          include: {
+            provider: { include: { user: true } }
+          }
+        },
+        customer: { include: { user: true } }
+      }
+    });
+
+    if (!booking) {
+      return res.status(404).json({ message: 'Booking not found' });
     }
 
-    // Fallback simulated intent
-    const paymentIntent = {
-      id: 'simulated_pi_' + Math.random().toString(36).substr(2, 9),
-      client_secret: 'simulated_client_secret_' + Math.random().toString(36).substr(2, 9),
-      amount,
-      currency,
-      paymentMethod
+    if (booking.requestStatus !== 'accepted') {
+      return res.status(400).json({ message: 'Booking must be accepted by provider first' });
+    }
+
+    if (booking.paymentStatus === 'paid_to_escrow') {
+      return res.status(400).json({ message: 'Payment already processed' });
+    }
+
+    // Calculate commission (15% default) - commission on base amount only, tip goes 100% to provider
+    const baseAmount = parseFloat(amount);
+    const tip = parseFloat(tipAmount) || 0;
+    const totalAmount = baseAmount + tip;
+    const commissionRate = 0.15;
+    const commissionAmount = baseAmount * commissionRate; // Commission only on service, not tip
+    const escrowAmount = totalAmount;
+
+    // Create payment record in escrow
+    const customer = await prisma.customer.findUnique({
+      where: { userId: req.user.id }
+    });
+
+    if (!customer) {
+      return res.status(400).json({ message: 'Customer profile not found' });
+    }
+
+    const payment = await prisma.payment.create({
+      data: {
+        customerId: customer.id,
+        bookingId,
+        amount: totalAmount, // Total includes tip
+        currency: 'ZAR',
+        paymentMethod: 'payfast',
+        status: 'pending',
+        escrowStatus: 'held',
+        commissionRate,
+        commissionAmount,
+        tipAmount: tip
+      }
+    });
+
+    // Payment simulation mode (for development/testing when PayFast not configured)
+    const simulatePayment = !PAYFAST_MERCHANT_ID || process.env.NODE_ENV === 'development' || req.body.simulate === true;
+    
+    if (simulatePayment) {
+      // Simulate payment success
+      const invoiceNumber = `INV-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${Math.random().toString(36).substr(2, 5).toUpperCase()}`;
+      
+      // Update payment as completed
+      await prisma.payment.update({
+        where: { id: payment.id },
+        data: {
+          status: 'completed',
+          escrowStatus: 'held',
+          transactionId: `sim_${payment.id}`,
+          payfastPaymentId: `sim_${payment.id}`
+        }
+      });
+
+      // Update booking
+      await prisma.booking.update({
+        where: { id: bookingId },
+        data: {
+          paymentStatus: 'paid_to_escrow',
+          status: 'confirmed',
+          invoiceNumber: invoiceNumber,
+          invoiceSentAt: new Date()
+        }
+      });
+
+      // Update Spana wallet
+      let wallet = await prisma.spanaWallet.findFirst();
+      if (!wallet) {
+        wallet = await prisma.spanaWallet.create({
+          data: {
+            totalHeld: 0,
+            totalReleased: 0,
+            totalCommission: 0
+          }
+        });
+      }
+
+      await prisma.spanaWallet.update({
+        where: { id: wallet.id },
+        data: {
+          totalHeld: { increment: totalAmount }
+        }
+      });
+
+      await prisma.walletTransaction.create({
+        data: {
+          walletId: wallet.id,
+          type: 'deposit',
+          amount: totalAmount,
+          bookingId,
+          paymentId: payment.id,
+          description: `Payment received for booking ${bookingId} (simulated)`
+        }
+      });
+
+      // Send invoice
+      try {
+        const { sendInvoiceEmail } = require('../config/mailer');
+        await sendInvoiceEmail({
+          to: booking.customer.user.email,
+          name: `${booking.customer.user.firstName} ${booking.customer.user.lastName}`,
+          invoiceNumber: invoiceNumber,
+          bookingId: bookingId,
+          serviceTitle: booking.service.title,
+          amount: totalAmount,
+          currency: 'ZAR',
+          jobSize: booking.jobSize,
+          basePrice: booking.basePrice,
+          multiplier: booking.jobSizeMultiplier,
+          calculatedPrice: booking.calculatedPrice,
+          tipAmount: tip,
+          date: payment.createdAt,
+          transactionId: `sim_${payment.id}`
+        });
+      } catch (_) {}
+
+      // Update workflow
+      try {
+        const workflowController = require('../controllers/serviceWorkflowController');
+        await workflowController.updateWorkflowStepByName(bookingId, 'Payment Received', 'completed', 'Payment received and invoice sent (simulated)');
+      } catch (_) {}
+
+      // Notify parties
+      try {
+        const app = require('../server');
+        const io = app.get && app.get('io');
+        if (io) {
+          io.to(booking.customer.user.id).emit('payment-received', { bookingId });
+          io.to(booking.service.provider.user.id).emit('payment-received', { bookingId });
+          io.to(`booking:${bookingId}`).emit('chatroom-active', { bookingId });
+        }
+      } catch (_) {}
+
+      return res.json({
+        paymentId: payment.id,
+        simulated: true,
+        message: 'Payment simulated successfully',
+        invoiceNumber: invoiceNumber,
+        amount: totalAmount,
+        baseAmount: baseAmount,
+        tipAmount: tip,
+        currency: 'ZAR'
+      });
+    }
+
+    // Real PayFast payment flow
+    const payfastData: any = {
+      merchant_id: PAYFAST_MERCHANT_ID,
+      merchant_key: PAYFAST_MERCHANT_KEY,
+      return_url: `${process.env.CLIENT_URL || 'http://localhost:3000'}/payment-success?bookingId=${bookingId}`,
+      cancel_url: `${process.env.CLIENT_URL || 'http://localhost:3000'}/payment-cancelled?bookingId=${bookingId}`,
+      notify_url: `${process.env.CLIENT_URL || 'http://localhost:5003'}/payments/payfast-webhook`,
+      name_first: booking.customer.user.firstName,
+      name_last: booking.customer.user.lastName,
+      email_address: booking.customer.user.email,
+      cell_number: booking.customer.user.phone || '',
+      amount: totalAmount.toFixed(2),
+      item_name: `Service: ${booking.service.title}`,
+      custom_str1: bookingId,
+      custom_str2: payment.id
     };
 
-    res.json(paymentIntent);
+    const signature = generatePayFastSignature(payfastData);
+    payfastData.signature = signature;
+
+    // Update booking payment status
+    await prisma.booking.update({
+      where: { id: bookingId },
+      data: {
+        paymentStatus: 'pending',
+        escrowAmount,
+        commissionAmount
+      }
+    });
+
+    res.json({
+      paymentId: payment.id,
+      payfastUrl: `${PAYFAST_URL}?${new URLSearchParams(payfastData).toString()}`,
+      amount: totalAmount,
+      baseAmount: baseAmount,
+      tipAmount: tip,
+      currency: 'ZAR'
+    });
   } catch (error) {
     console.error('createPaymentIntent error', error);
     res.status(500).json({ message: 'Server error' });
   }
 };
 
-// Confirm payment
+// PayFast webhook handler
+exports.payfastWebhook = async (req, res) => {
+  try {
+    // PayFast sends data as form-encoded or query params
+    const data = req.method === 'POST' ? req.body : req.query;
+
+    // Verify signature
+    const receivedSignature = data.signature;
+    const calculatedSignature = generatePayFastSignature(data);
+    
+    if (receivedSignature !== calculatedSignature) {
+      console.error('PayFast signature mismatch');
+      return res.status(400).json({ message: 'Invalid signature' });
+    }
+
+    const bookingId = data.custom_str1;
+    const paymentId = data.custom_str2;
+
+    if (data.payment_status === 'COMPLETE') {
+      // Update payment
+      const payment = await prisma.payment.update({
+        where: { id: paymentId },
+        data: {
+          status: 'completed',
+          escrowStatus: 'held',
+          transactionId: data.pf_payment_id,
+          payfastPaymentId: data.pf_payment_id,
+          payfastSignature: data.signature
+        }
+      });
+
+      // Generate invoice number
+      const invoiceNumber = `INV-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${Math.random().toString(36).substr(2, 5).toUpperCase()}`;
+
+      // Get booking details for invoice
+      const booking = await prisma.booking.findUnique({
+        where: { id: bookingId },
+        include: {
+          service: true,
+          customer: {
+            include: {
+              user: {
+                select: {
+                  id: true,
+                  email: true,
+                  firstName: true,
+                  lastName: true
+                }
+              }
+            }
+          }
+        }
+      });
+
+      // Update booking with invoice number
+      await prisma.booking.update({
+        where: { id: bookingId },
+        data: {
+          paymentStatus: 'paid_to_escrow',
+          status: 'confirmed',
+          invoiceNumber: invoiceNumber,
+          invoiceSentAt: new Date()
+        }
+      });
+
+      // Update workflow: Payment Received
+      try {
+        const workflowController = require('../controllers/serviceWorkflowController');
+        await workflowController.updateWorkflowStepByName(bookingId, 'Payment Received', 'completed', 'Payment received and invoice sent');
+      } catch (_) {}
+
+      // Update Spana wallet
+      let wallet = await prisma.spanaWallet.findFirst();
+      if (!wallet) {
+        wallet = await prisma.spanaWallet.create({
+          data: {
+            totalHeld: 0,
+            totalReleased: 0,
+            totalCommission: 0
+          }
+        });
+      }
+
+      await prisma.spanaWallet.update({
+        where: { id: wallet.id },
+        data: {
+          totalHeld: { increment: payment.amount }
+        }
+      });
+
+      await prisma.walletTransaction.create({
+        data: {
+          walletId: wallet.id,
+          type: 'deposit',
+          amount: payment.amount,
+          bookingId,
+          paymentId,
+          description: `Payment received for booking ${bookingId}`
+        }
+      });
+
+      // Notify parties
+      try {
+        const app = require('../server');
+        const io = app.get && app.get('io');
+        if (io) {
+          const booking = await prisma.booking.findUnique({
+            where: { id: bookingId },
+            include: {
+              customer: { include: { user: true } },
+              service: { include: { provider: { include: { user: true } } } }
+            }
+          });
+
+          if (booking) {
+            io.to(booking.customer.user.id).emit('payment-received', { bookingId });
+            io.to(booking.service.provider.user.id).emit('payment-received', { bookingId });
+            // Chatroom is now active
+            io.to(`booking:${bookingId}`).emit('chatroom-active', { bookingId });
+          }
+        }
+      } catch (_) {}
+
+      // Send receipts
+      try {
+        const bookingForEmail = await prisma.booking.findUnique({
+          where: { id: bookingId },
+          include: {
+            service: {
+              include: {
+                provider: {
+                  include: {
+                    user: {
+                      select: { email: true }
+                    }
+                  }
+                }
+              }
+            },
+            customer: {
+              include: {
+                user: {
+                  select: { 
+                    id: true,
+                    email: true,
+                    firstName: true,
+                    lastName: true
+                  }
+                }
+              }
+            }
+          }
+        });
+
+        // Send invoice to customer
+        if (bookingForEmail?.customer?.user?.email) {
+          const { sendInvoiceEmail } = require('../config/mailer');
+          sendInvoiceEmail({
+            to: bookingForEmail.customer.user.email,
+            name: `${bookingForEmail.customer.user.firstName || ''} ${bookingForEmail.customer.user.lastName || ''}`.trim() || 'Customer',
+            invoiceNumber: invoiceNumber,
+            bookingId: bookingId,
+            serviceTitle: bookingForEmail.service.title,
+            amount: payment.amount,
+            currency: 'ZAR',
+            jobSize: bookingForEmail.jobSize,
+            basePrice: bookingForEmail.basePrice,
+            multiplier: bookingForEmail.jobSizeMultiplier,
+            calculatedPrice: bookingForEmail.calculatedPrice,
+            tipAmount: payment.tipAmount || 0,
+            date: payment.createdAt,
+            transactionId: payment.payfastPaymentId
+          }).catch(() => {});
+        }
+
+        // Send receipt to provider
+        if (bookingForEmail?.service?.provider?.user?.email) {
+          const payload = {
+            amount: payment.amount,
+            currency: 'ZAR',
+            bookingId,
+            transactionId: payment.payfastPaymentId,
+            createdAt: payment.createdAt
+          };
+          sendReceiptEmail({ to: bookingForEmail.service.provider.user.email, toRole: 'provider', ...payload }).catch(() => {});
+        }
+      } catch (_) {}
+
+      await prisma.activity.create({
+        data: {
+          userId: payment.customerId,
+          actionType: 'payment_confirm',
+          contentId: payment.id,
+          contentModel: 'Payment',
+          details: { bookingId }
+        }
+      });
+    }
+
+    res.status(200).send('OK');
+  } catch (error) {
+    console.error('PayFast webhook error', error);
+    res.status(500).json({ message: 'Webhook processing error' });
+  }
+};
+
+// Release funds to provider (called when booking is completed)
+exports.releaseFunds = async (req, res) => {
+  try {
+    const { bookingId } = req.params;
+
+    const booking = await prisma.booking.findUnique({
+      where: { id: bookingId },
+      include: {
+        payment: true,
+        service: {
+          include: {
+            provider: { include: { user: true } }
+          }
+        }
+      }
+    });
+
+    if (!booking) {
+      return res.status(404).json({ message: 'Booking not found' });
+    }
+
+    if (booking.status !== 'completed') {
+      return res.status(400).json({ message: 'Booking must be completed first' });
+    }
+
+    if (booking.payment?.escrowStatus !== 'held') {
+      return res.status(400).json({ message: 'Funds already released or not in escrow' });
+    }
+
+    // Release escrow funds (tip goes 100% to provider, commission only on base amount)
+    const commissionRate = booking.payment.commissionRate || 0.15;
+    const tipAmount = booking.payment.tipAmount || 0;
+    const baseAmount = booking.payment.amount - tipAmount;
+    const commissionAmount = baseAmount * commissionRate; // Commission only on service, not tip
+    const providerPayout = booking.payment.amount - commissionAmount; // Provider gets base - commission + full tip
+
+    await prisma.payment.update({
+      where: { id: booking.payment.id },
+      data: {
+        escrowStatus: 'released',
+        commissionAmount,
+        providerPayout,
+        status: 'completed'
+      }
+    });
+
+    await prisma.booking.update({
+      where: { id: bookingId },
+      data: {
+        paymentStatus: 'released_to_provider',
+        commissionAmount,
+        providerPayoutAmount: providerPayout
+      }
+    });
+
+    // Update provider wallet
+    if (booking.service.provider.user.id) {
+      await prisma.user.update({
+        where: { id: booking.service.provider.user.id },
+        data: {
+          walletBalance: { increment: providerPayout }
+        }
+      });
+    }
+
+    // Update Spana wallet
+    let wallet = await prisma.spanaWallet.findFirst();
+    if (!wallet) {
+      wallet = await prisma.spanaWallet.create({
+        data: {
+          totalHeld: 0,
+          totalReleased: 0,
+          totalCommission: 0
+        }
+      });
+    }
+
+    await prisma.spanaWallet.update({
+      where: { id: wallet.id },
+      data: {
+        totalHeld: { decrement: booking.payment.amount },
+        totalReleased: { increment: providerPayout },
+        totalCommission: { increment: commissionAmount }
+      }
+    });
+
+    await prisma.walletTransaction.create({
+      data: {
+        walletId: wallet.id,
+        type: 'release',
+        amount: providerPayout,
+        bookingId,
+        paymentId: booking.payment.id,
+        description: `Released to provider after service completion`
+      }
+    });
+
+    await prisma.walletTransaction.create({
+      data: {
+        walletId: wallet.id,
+        type: 'commission',
+        amount: commissionAmount,
+        bookingId,
+        paymentId: booking.payment.id,
+        description: `Commission earned`
+      }
+    });
+
+    res.json({ message: 'Funds released to provider successfully' });
+  } catch (error) {
+    console.error('Release funds error', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// Legacy confirm payment (kept for backward compatibility, but redirects to PayFast)
 exports.confirmPayment = async (req, res) => {
   try {
     const { paymentIntentId, bookingId, amount, paymentMethod } = req.body;
 
-    // If Stripe is enabled, capture or verify the intent
+    // Note: Stripe support removed, using PayFast only
+    // If you need Stripe, uncomment and configure STRIPE_SECRET_KEY
+    const stripeClient: any = null; // Stripe removed, use PayFast
     if (stripeClient && paymentIntentId) {
       try {
         const pi = await stripeClient.paymentIntents.capture(paymentIntentId);
@@ -120,7 +632,7 @@ exports.confirmPayment = async (req, res) => {
 
           const payload = {
             amount,
-            currency: req.body.currency || 'USD',
+            currency: req.body.currency || 'ZAR',
             bookingId,
             transactionId: paymentIntentId,
             createdAt: payment.createdAt
@@ -202,7 +714,7 @@ exports.confirmPayment = async (req, res) => {
 
       const payload = {
         amount,
-        currency: req.body.currency || 'USD',
+        currency: req.body.currency || 'ZAR',
         bookingId,
         transactionId: payment.transactionId,
         createdAt: payment.createdAt
@@ -309,10 +821,12 @@ exports.refundPayment = async (req, res) => {
 
 export {};
 
-// Optional webhook handler for Stripe events (raw body expected)
+// Legacy webhook handler (kept for backward compatibility)
 exports.webhookHandler = async (req: any, res: any) => {
   try {
-    // If Stripe configured, verify signature and handle events
+    // Note: Stripe support removed, using PayFast only
+    // Use /payments/payfast-webhook for PayFast webhooks
+    const stripeClient: any = null; // Stripe removed, use PayFast
     if (stripeClient && process.env.STRIPE_WEBHOOK_SECRET) {
       const sig = req.headers['stripe-signature'];
       let event;
