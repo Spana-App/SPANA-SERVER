@@ -3,8 +3,22 @@ import { Pool } from 'pg';
 
 // PostgreSQL connection pool configuration
 const postgresHost = process.env.POSTGRES_HOST || 'localhost';
-// If using Render PostgreSQL, ensure we use the full hostname
-const fullHostname = postgresHost.includes('.render.com') ? postgresHost : `${postgresHost}.frankfurt-postgres.render.com`;
+
+// Detect if using Render internal URL (no .render.com = internal, no SSL needed)
+// or external URL (.render.com = external, SSL required)
+const isInternalRenderUrl = process.env.DATABASE_URL?.includes('@dpg-') && 
+                            !process.env.DATABASE_URL?.includes('.render.com');
+const isExternalRenderUrl = process.env.DATABASE_URL?.includes('.render.com') || 
+                            postgresHost.includes('.render.com');
+
+// If using Render internal URL, use short hostname; otherwise use full hostname
+const fullHostname = isInternalRenderUrl 
+  ? postgresHost  // Internal: use short hostname (dpg-xxx)
+  : (postgresHost.includes('.render.com') ? postgresHost : `${postgresHost}.frankfurt-postgres.render.com`);
+
+// SSL only needed for external connections, not internal Render connections
+const shouldUseSSL = (isExternalRenderUrl && process.env.POSTGRES_SSL !== 'false') || 
+                     process.env.POSTGRES_SSL === 'true';
 
 const poolConfig = {
   host: fullHostname,
@@ -12,7 +26,7 @@ const poolConfig = {
   database: process.env.POSTGRES_DB || 'spana_db',
   user: process.env.POSTGRES_USER || 'postgres',
   password: process.env.POSTGRES_PASSWORD || 'EksIsHands0me',
-  ssl: process.env.POSTGRES_SSL === 'true' ? { rejectUnauthorized: false, sslmode: 'prefer' } : false,
+  ssl: shouldUseSSL ? { rejectUnauthorized: false } : false,
   max: 10, // Maximum number of clients in the pool
   min: 2, // Minimum number of clients in the pool
   idleTimeoutMillis: 10000, // Close idle clients after 10 seconds
