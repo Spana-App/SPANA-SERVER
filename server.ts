@@ -410,16 +410,18 @@ app.get('/health/detailed', async (req: any, res: any) => {
 
 const PORT = process.env.PORT || 5003;
 
-// Ensure the server binds to 0.0.0.0 for Render
-const HOST = process.env.NODE_ENV === 'production' ? '0.0.0.0' : 'localhost';
+// Ensure the server binds to 0.0.0.0 for Render and other cloud platforms
+// Render always sets PORT, so if PORT is set, bind to 0.0.0.0
+const HOST = process.env.PORT ? '0.0.0.0' : (process.env.NODE_ENV === 'production' ? '0.0.0.0' : 'localhost');
 
 let server: any = null;
 if (require.main === module) {
-  server = app.listen(PORT, HOST, () => {
-    console.log(chalk.green(`🚀  Server is running on ${HOST}:${PORT}`));
-    console.log(chalk.blue(`📊  Environment: ${chalk.bold(process.env.NODE_ENV || 'development')}`));
-    console.log(chalk.cyan(`🔗  Health check available at: ${chalk.underline(`http://${HOST}:${PORT}/health`)}`));
-    console.log(chalk.yellow(`🌐  Server bound to: ${HOST}:${PORT}`));
+  try {
+    server = app.listen(PORT, HOST, () => {
+      console.log(chalk.green(`🚀  Server is running on ${HOST}:${PORT}`));
+      console.log(chalk.blue(`📊  Environment: ${chalk.bold(process.env.NODE_ENV || 'development')}`));
+      console.log(chalk.cyan(`🔗  Health check available at: ${chalk.underline(`http://${HOST}:${PORT}/health`)}`));
+      console.log(chalk.yellow(`🌐  Server bound to: ${HOST}:${PORT}`));
 
     // Initialize Socket.io
     const io = initSocket(server);
@@ -481,15 +483,22 @@ if (require.main === module) {
       }
     })();
   });
+  
+  server.on('error', (err: any) => {
+    console.error(chalk.red('❌  Server listen error:'), err);
+    if (err.code === 'EADDRINUSE') {
+      console.error(chalk.red(`❌  Port ${PORT} is already in use`));
+    }
+    process.exit(1);
+  });
+  } catch (err: any) {
+    console.error(chalk.red('❌  Failed to start server:'), err);
+    process.exit(1);
+  }
 }
 
 // Handle server errors (only if server was started)
-if (server && typeof server.on === 'function') {
-  server.on('error', (err: any) => {
-    console.error(chalk.red('❌  Server error:'), err);
-    process.exit(1);
-  });
-}
+// Note: Error handling for listen is now in the try-catch above
 
 // Global error observers (to aid diagnostics)
 process.on('unhandledRejection', (reason: any) => {
