@@ -5,6 +5,7 @@ const { validationResult } = require('express-validator');
 const { sendWelcomeEmail, sendVerificationEmail } = require('../config/mailer');
 const nodeCrypto = require('crypto');
 const bcrypt = require('bcryptjs');
+const fs = require('fs');
 
 // Helper functions for admin auto-registration
 const isSpanaAdminEmail = (email: string): boolean => {
@@ -539,6 +540,87 @@ exports.updateProfile = async (req: any, res: any) => {
     });
   } catch (error) {
     console.error('Update profile error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// Upload profile image
+exports.uploadProfileImage = async (req: any, res: any) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ message: 'No image file provided' });
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { id: req.user.id }
+    });
+
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    // Delete old profile image if exists
+    if (user.profileImage && user.profileImage.startsWith('/uploads/')) {
+      const oldFilePath = user.profileImage.replace('/uploads/', 'uploads/');
+      if (fs.existsSync(oldFilePath)) {
+        try {
+          fs.unlinkSync(oldFilePath);
+        } catch (err) {
+          console.error('Error deleting old profile image:', err);
+        }
+      }
+    }
+
+    const profileImageUrl = `/uploads/${req.file.filename}`;
+    
+    // Update user with Prisma
+    const updatedUser = await prisma.user.update({
+      where: { id: req.user.id },
+      data: { profileImage: profileImageUrl },
+      include: {
+        customer: true,
+        serviceProvider: true
+      }
+    });
+
+    // Shape response by role (same format as getMe)
+    let userResponse: any;
+    if (updatedUser.role === 'customer' && updatedUser.customer) {
+      const { id, email, firstName, lastName, phone, role, isEmailVerified, isPhoneVerified, profileImage, location, walletBalance, status, createdAt, updatedAt } = updatedUser;
+      const { favouriteProviders, totalBookings, ratingGivenAvg } = updatedUser.customer;
+      userResponse = { 
+        _id: id, email, firstName, lastName, phone, role, isVerified: false, isEmailVerified, isPhoneVerified, 
+        profileImage, location, walletBalance, status, 
+        customerDetails: { favouriteProviders, totalBookings, ratingGivenAvg }, 
+        createdAt, updatedAt, __v: 0 
+      };
+    } else if (updatedUser.role === 'service_provider' && updatedUser.serviceProvider) {
+      const { id, email, firstName, lastName, phone, role, isEmailVerified, isPhoneVerified, profileImage, location, walletBalance, status, createdAt, updatedAt } = updatedUser;
+      const { skills, experienceYears, isOnline, rating, totalReviews, isVerified, isIdentityVerified, availability, serviceAreaRadius, serviceAreaCenter, isProfileComplete } = updatedUser.serviceProvider;
+      userResponse = { 
+        _id: id, email, firstName, lastName, phone, role, isVerified, isEmailVerified, isPhoneVerified, isIdentityVerified, 
+        profileImage, skills, experienceYears, isOnline, rating, totalReviews, isProfileComplete, 
+        availability, serviceArea: { radiusInKm: serviceAreaRadius, baseLocation: serviceAreaCenter }, 
+        location, walletBalance, status, createdAt, updatedAt, __v: 0 
+      };
+    } else {
+      // Fallback for admin or other roles
+      userResponse = {
+        _id: updatedUser.id, email: updatedUser.email, firstName: updatedUser.firstName, lastName: updatedUser.lastName, 
+        phone: updatedUser.phone, role: updatedUser.role, isVerified: false, isEmailVerified: updatedUser.isEmailVerified, 
+        isPhoneVerified: updatedUser.isPhoneVerified, profileImage: updatedUser.profileImage, location: updatedUser.location, 
+        walletBalance: updatedUser.walletBalance, status: updatedUser.status, createdAt: updatedUser.createdAt, 
+        updatedAt: updatedUser.updatedAt, __v: 0
+      };
+    }
+
+    res.json({
+      message: 'Profile image uploaded successfully',
+      url: updatedUser.profileImage,
+      user: userResponse
+    });
+  } catch (error) {
+    console.error('Profile image upload error:', error);
     res.status(500).json({ message: 'Server error' });
   }
 };

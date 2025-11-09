@@ -35,14 +35,41 @@ if (!fs.existsSync('uploads')) fs.mkdirSync('uploads');
 // Upload profile image
 router.post('/profile', auth, imageUpload.single('avatar'), async (req, res) => {
   try {
+    if (!req.file) {
+      return res.status(400).json({ message: 'No file uploaded' });
+    }
+
     const user = await prisma.user.findUnique({
       where: { id: req.user.id }
     });
     if (!user) return res.status(404).json({ message: 'User not found' });
-    user.profileImage = `/uploads/${req.file.filename}`;
-    await user.save();
-    res.json({ message: 'Profile image uploaded', url: user.profileImage });
+
+    // Delete old profile image if exists
+    if (user.profileImage && user.profileImage.startsWith('/uploads/')) {
+      const oldFilePath = user.profileImage.replace('/uploads/', 'uploads/');
+      if (fs.existsSync(oldFilePath)) {
+        try {
+          fs.unlinkSync(oldFilePath);
+        } catch (err) {
+          console.error('Error deleting old profile image:', err);
+        }
+      }
+    }
+
+    const profileImageUrl = `/uploads/${req.file.filename}`;
+    
+    // Update user with Prisma
+    const updatedUser = await prisma.user.update({
+      where: { id: req.user.id },
+      data: { profileImage: profileImageUrl }
+    });
+
+    res.json({ 
+      message: 'Profile image uploaded successfully', 
+      url: updatedUser.profileImage 
+    });
   } catch (error) {
+    console.error('Profile image upload error:', error);
     res.status(500).json({ message: 'Server error' });
   }
 });
