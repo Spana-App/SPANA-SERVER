@@ -54,11 +54,20 @@ describe('E2E: Uber-Style Booking Flow', () => {
         });
 
       expect([201, 200]).toContain(res.status);
-      expect(res.body.token || res.body.user?.token).toBeDefined();
-      customerToken = res.body.token || res.body.user?.token;
+      // Registration no longer returns token - need to login
       customerId = res.body.user?._id || res.body.user?.id || res.body.id;
-      expect(customerToken).toBeDefined();
       expect(customerId).toBeDefined();
+      
+      // Login to get token
+      const loginRes = await request(app)
+        .post('/auth/login')
+        .send({
+          email: 'xolinxiweni@gmail.com',
+          password: 'Test123!@#'
+        });
+      expect(loginRes.status).toBe(200);
+      customerToken = loginRes.body.token;
+      expect(customerToken).toBeDefined();
     });
 
     test('Register service provider', async () => {
@@ -84,11 +93,20 @@ describe('E2E: Uber-Style Booking Flow', () => {
         });
 
       expect([201, 200]).toContain(res.status);
-      expect(res.body.token || res.body.user?.token).toBeDefined();
-      providerToken = res.body.token || res.body.user?.token;
+      // Registration no longer returns token - need to login
       providerId = res.body.user?._id || res.body.user?.id || res.body.id;
-      expect(providerToken).toBeDefined();
       expect(providerId).toBeDefined();
+      
+      // Login to get token
+      const loginRes = await request(app)
+        .post('/auth/login')
+        .send({
+          email: 'eksnxiweni@gmail.com',
+          password: 'Test123!@#'
+        });
+      expect(loginRes.status).toBe(200);
+      providerToken = loginRes.body.token;
+      expect(providerToken).toBeDefined();
     });
 
     test('Register admin (spana.co.za email)', async () => {
@@ -105,10 +123,20 @@ describe('E2E: Uber-Style Booking Flow', () => {
         });
 
       expect([201, 200]).toContain(res.status);
-      expect(res.body.token || res.body.user?.token).toBeDefined();
-      adminToken = res.body.token || res.body.user?.token;
+      // Registration no longer returns token - need to login
       const userRole = res.body.user?.role || res.body.role;
       expect(userRole).toBe('admin');
+      
+      // Login to get token
+      const loginRes = await request(app)
+        .post('/auth/login')
+        .send({
+          email: `testadmin_${timestamp}@spana.co.za`,
+          password: 'Test123!@#'
+        });
+      expect(loginRes.status).toBe(200);
+      adminToken = loginRes.body.token;
+      expect(adminToken).toBeDefined();
     });
 
     test('Complete provider profile', async () => {

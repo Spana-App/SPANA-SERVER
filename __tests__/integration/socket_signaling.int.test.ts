@@ -20,7 +20,7 @@ beforeAll(async () => {
   process.env.MONGODB_URI = uri;
   jest.resetModules();
   app = require('../../server');
-  await mongoose.connect(uri);
+  // MongoDB connection removed - using Prisma now
 
   server = http.createServer(app);
   const initSocket = app.initSocket || require('../../server').initSocket;
@@ -33,7 +33,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   if (server) server.close();
-  await mongoose.disconnect();
+  // MongoDB disconnect removed - using Prisma now
   if (mongod) await mongod.stop();
 });
 
