@@ -22,8 +22,31 @@ exports.getAllServices = async (req, res) => {
       where.category = category;
     }
 
-    // Only show admin-approved services to non-admin users
-    if (req.user?.role !== 'admin') {
+    // Filter services based on user role
+    if (req.user?.role === 'admin') {
+      // Admins see all services
+    } else if (req.user?.role === 'service_provider') {
+      // Service providers see their own services (all statuses) + approved services from others
+      const serviceProvider = await prisma.serviceProvider.findUnique({
+        where: { userId: req.user.id },
+        select: { id: true }
+      });
+      
+      if (serviceProvider) {
+        where.OR = [
+          { providerId: serviceProvider.id }, // Their own services
+          { 
+            adminApproved: true,
+            status: 'active'
+          } // Approved services from others
+        ];
+      } else {
+        // If no service provider record, only show approved services
+        where.adminApproved = true;
+        where.status = 'active';
+      }
+    } else {
+      // Customers and others only see admin-approved active services
       where.adminApproved = true;
       where.status = 'active';
     }
@@ -143,8 +166,12 @@ exports.updateService = async (req, res) => {
     // First, get the existing service to check authorization
     const existingService = await prisma.service.findUnique({
       where: { id: req.params.id },
-      select: {
-        providerId: true
+      include: {
+        provider: {
+          select: {
+            userId: true
+          }
+        }
       }
     });
 
@@ -152,9 +179,9 @@ exports.updateService = async (req, res) => {
       return res.status(404).json({ message: 'Service not found' });
     }
 
-    // Check if the user is the provider or an admin
-    if (existingService.providerId !== req.user.id && req.user.role !== 'admin') {
-      return res.status(403).json({ message: 'Not authorized' });
+    // Check if the user is the provider (via provider.userId) or an admin
+    if (existingService.provider.userId !== req.user.id && req.user.role !== 'admin') {
+      return res.status(403).json({ message: 'Not authorized to update this service' });
     }
 
     // Update the service
@@ -198,8 +225,12 @@ exports.deleteService = async (req, res) => {
     // First, get the existing service to check authorization
     const existingService = await prisma.service.findUnique({
       where: { id: req.params.id },
-      select: {
-        providerId: true
+      include: {
+        provider: {
+          select: {
+            userId: true
+          }
+        }
       }
     });
 
@@ -207,9 +238,9 @@ exports.deleteService = async (req, res) => {
       return res.status(404).json({ message: 'Service not found' });
     }
 
-    // Check if the user is the provider or an admin
-    if (existingService.providerId !== req.user.id && req.user.role !== 'admin') {
-      return res.status(403).json({ message: 'Not authorized' });
+    // Check if the user is the provider (via provider.userId) or an admin
+    if (existingService.provider.userId !== req.user.id && req.user.role !== 'admin') {
+      return res.status(403).json({ message: 'Not authorized to delete this service' });
     }
 
     // Delete the service
