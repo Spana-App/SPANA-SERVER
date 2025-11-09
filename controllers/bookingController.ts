@@ -115,9 +115,19 @@ exports.createBooking = async (req: any, res: any) => {
         } 
       });
 
+    // For customers: Remove provider details until booking is accepted (Uber-style)
+    let responseBooking = booking;
+    if (req.user.role === 'customer' && (booking.service as any).provider) {
+      const { provider, ...serviceWithoutProvider } = (booking.service as any);
+      responseBooking = {
+        ...booking,
+        service: serviceWithoutProvider
+      } as any;
+    }
+
     res.status(201).json({
       message: 'Booking request created. Waiting for provider acceptance.',
-      booking
+      booking: responseBooking
     });
   } catch (error) {
     console.error(error);
@@ -723,13 +733,29 @@ exports.getUserBookings = async (req: any, res: any) => {
       bookings = await prisma.booking.findMany({ 
         where: { customerId: customer.id },
         include: {
-          service: true,
+          service: {
+            include: {
+              provider: {
+                include: { user: true }
+              }
+            }
+          },
           customer: {
             include: {
               user: true
             }
-          }
+          },
+          payment: true
         }
+      });
+      
+      // For customers: Only show provider details if booking is accepted (Uber-style)
+      bookings = bookings.map((booking: any) => {
+        if (booking.requestStatus !== 'accepted' && booking.service?.provider) {
+          const { provider, ...serviceWithoutProvider } = booking.service;
+          booking.service = serviceWithoutProvider;
+        }
+        return booking;
       });
     } else if (req.user.role === 'service_provider') {
       // First, get the ServiceProvider record for this user
@@ -783,12 +809,19 @@ exports.getBookingById = async (req: any, res: any) => {
     const booking = await prisma.booking.findUnique({
       where: { id: req.params.id },
       include: {
-        service: true,
+        service: {
+          include: {
+            provider: {
+              include: { user: true }
+            }
+          }
+        },
         customer: {
           include: {
             user: true
           }
-        }
+        },
+        payment: true
       }
     });
 
@@ -797,19 +830,24 @@ exports.getBookingById = async (req: any, res: any) => {
     }
 
     // Check if the user is involved in the booking or is an admin
-    if (req.user.role === 'customer' && booking.customer.userId !== req.user.id) {
-      return res.status(403).json({ message: 'Not authorized' });
-    }
-
-    if (req.user.role === 'service_provider') {
-      // Service is already included in the booking query
-      const service = await prisma.service.findUnique({
-        where: { id: booking.serviceId },
-        include: { provider: true }
-      });
-      if (!service || service.provider.userId !== req.user.id) {
-        return res.status(403).json({ message: 'Not authorized' });
+    if (req.user.role === 'admin') {
+      // Admins can see all bookings with full details
+    } else if (req.user.role === 'customer') {
+      if (booking.customer.userId !== req.user.id) {
+        return res.status(403).json({ message: 'Not authorized to view this booking' });
       }
+      // For customers: Only show provider details if booking is accepted (Uber-style)
+      if (booking.requestStatus !== 'accepted' && (booking.service as any).provider) {
+        const { provider, ...serviceWithoutProvider } = booking.service as any;
+        (booking as any).service = serviceWithoutProvider;
+      }
+    } else if (req.user.role === 'service_provider') {
+      // Service provider can only see bookings for their services
+      if (!(booking.service as any).provider || (booking.service as any).provider.userId !== req.user.id) {
+        return res.status(403).json({ message: 'Not authorized to view this booking' });
+      }
+    } else {
+      return res.status(403).json({ message: 'Not authorized' });
     }
 
     res.json(booking);

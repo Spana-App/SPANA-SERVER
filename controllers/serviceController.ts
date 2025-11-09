@@ -53,7 +53,7 @@ exports.getAllServices = async (req, res) => {
 
     const services = await prisma.service.findMany({
       where,
-      include: {
+      include: req.user?.role === 'customer' || !req.user ? {} : {
         provider: {
           select: {
             rating: true,
@@ -69,6 +69,15 @@ exports.getAllServices = async (req, res) => {
       }
     });
 
+    // For customers: Remove provider details (Uber-style - no provider info until booking accepted)
+    if (req.user?.role === 'customer' || !req.user) {
+      const sanitizedServices = services.map((service: any) => {
+        const { provider, ...serviceWithoutProvider } = service;
+        return serviceWithoutProvider;
+      });
+      return res.json(sanitizedServices);
+    }
+
     res.json(services);
   } catch (error) {
     console.error(error);
@@ -83,7 +92,7 @@ exports.getServiceById = async (req, res) => {
   try {
     const service = await prisma.service.findUnique({
       where: { id: req.params.id },
-      include: {
+      include: req.user?.role === 'customer' || !req.user ? {} : {
         provider: {
           select: {
             rating: true,
@@ -101,6 +110,12 @@ exports.getServiceById = async (req, res) => {
 
     if (!service) {
       return res.status(404).json({ message: 'Service not found' });
+    }
+
+    // For customers: Remove provider details (Uber-style - no provider info until booking accepted)
+    if (req.user?.role === 'customer' || !req.user) {
+      const { provider, ...serviceWithoutProvider } = service as any;
+      return res.json(serviceWithoutProvider);
     }
 
     res.json(service);
@@ -269,7 +284,7 @@ exports.getServicesByCategory = async (req, res) => {
 
     const services = await prisma.service.findMany({
       where,
-      include: {
+      include: req.user?.role === 'customer' || !req.user ? {} : {
         provider: {
           select: {
             rating: true,
@@ -284,6 +299,15 @@ exports.getServicesByCategory = async (req, res) => {
         }
       }
     });
+
+    // For customers: Remove provider details (Uber-style - no provider info until booking accepted)
+    if (req.user?.role === 'customer' || !req.user) {
+      const sanitizedServices = services.map((service: any) => {
+        const { provider, ...serviceWithoutProvider } = service;
+        return serviceWithoutProvider;
+      });
+      return res.json(sanitizedServices);
+    }
 
     res.json(services);
   } catch (error) {
