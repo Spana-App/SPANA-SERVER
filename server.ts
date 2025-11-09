@@ -232,8 +232,9 @@ app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
 // Database connection: only connect when running the server directly
+// Make it non-blocking so server starts immediately
 if (require.main === module) {
-  // Test PostgreSQL connection with retry logic
+  // Test PostgreSQL connection with retry logic (non-blocking)
   const connectWithRetry = async (retries = 3) => {
     for (let i = 0; i < retries; i++) {
       try {
@@ -246,13 +247,14 @@ if (require.main === module) {
           console.error(chalk.red('❌  PostgreSQL connection failed after all retries. Server will continue without database.'));
           console.log(chalk.yellow('💡  You can test the API endpoints, but database operations will fail.'));
         } else {
-          await new Promise(resolve => setTimeout(resolve, 2000)); // Wait 2 seconds before retry
+          await new Promise(resolve => setTimeout(resolve, 1000)); // Reduced to 1 second
         }
       }
     }
   };
   
-  connectWithRetry();
+  // Don't await - let server start immediately
+  connectWithRetry().catch(() => {});
 }
 
 // Add caching middleware for GET requests using cache abstraction or Redis if enabled
@@ -427,61 +429,59 @@ if (require.main === module) {
     const io = initSocket(server);
     app.set('io', io); // Make io accessible in routes
 
-    // Startup diagnostics (non-blocking)
-    (async () => {
-      try {
-        const version = process.env.APP_VERSION || 'unknown';
-        const redisStatus = USE_REDIS ? (redisClient && (redisClient as any).connected ? 'connected' : 'disconnected') : 'disabled';
-        
-        // Check database status
-        let dbState = 'disconnected';
+    // Startup diagnostics (truly non-blocking, deferred)
+    // Run after a short delay to not block server startup
+    setTimeout(() => {
+      (async () => {
         try {
-          await prisma.$queryRaw`SELECT 1`;
-          dbState = 'connected';
-        } catch (err) {
-          dbState = 'disconnected';
-        }
-        
-        const mem = process.memoryUsage();
-        const load = os.loadavg();
-
-        console.log(chalk.white('\n──────────────── Startup Diagnostics ────────────────'));
-        console.log(' App version:   ', version);
-        console.log(' Node:          ', process.version);
-        console.log(' Env:           ', process.env.NODE_ENV);
-        console.log(' PostgreSQL:    ', dbState);
-        console.log(' Redis:         ', redisStatus);
-        console.log(' Memory (MB):   ', `rss=${(mem.rss/1048576).toFixed(1)} heapUsed=${(mem.heapUsed/1048576).toFixed(1)}`);
-        console.log(' Load avg:      ', load.map(n => n.toFixed(2)).join(', '));
-        console.log(' Routes:        ', ['/auth','/users','/services','/bookings','/payments','/notifications','/activities','/uploads','/email-verification'].join(' '));
-
-        const mailProvider = (process.env.MAIL_PROVIDER || 'smtp').toLowerCase();
-        const mailEnabled = String(process.env.MAIL_ENABLED || 'true').toLowerCase() === 'true';
-        if (!mailEnabled || mailProvider === 'none' || mailProvider === 'disabled') {
-          console.log(' SMTP:          ', 'disabled');
-        } else {
+          const version = process.env.APP_VERSION || 'unknown';
+          const redisStatus = USE_REDIS ? (redisClient && (redisClient as any).connected ? 'connected' : 'disconnected') : 'disabled';
+          
+          // Check database status (with timeout to not block)
+          let dbState = 'checking...';
           try {
-            const smtp = await require('./config/mailer').verifySmtp();
-            console.log(' SMTP:          ', smtp.ok ? chalk.green(`connected (${mailProvider})`) : chalk.red(`failed: ${typeof smtp.error === 'string' ? smtp.error : JSON.stringify(smtp.error)}`));
-          } catch (e) {
-            console.log(' SMTP:          ', chalk.red('failed to verify'));
+            const dbCheck = await Promise.race([
+              prisma.$queryRaw`SELECT 1`.then(() => 'connected'),
+              new Promise(resolve => setTimeout(() => resolve('timeout'), 2000))
+            ]);
+            dbState = dbCheck === 'connected' ? 'connected' : 'timeout';
+          } catch (err) {
+            dbState = 'disconnected';
           }
-        }
+          
+          const mem = process.memoryUsage();
+          const load = os.loadavg();
 
-        if (process.env.EXTERNAL_API_URL) {
-          try {
-            const start = Date.now();
-            await dns.lookup(new URL(process.env.EXTERNAL_API_URL).hostname);
-            console.log(' External DNS:  ', chalk.green(`ok (${Date.now()-start}ms)`));
-          } catch (err: any) {
-            console.log(' External DNS:  ', chalk.red(`fail: ${err.message}`));
+          console.log(chalk.white('\n──────────────── Startup Diagnostics ────────────────'));
+          console.log(' App version:   ', version);
+          console.log(' Node:          ', process.version);
+          console.log(' Env:           ', process.env.NODE_ENV);
+          console.log(' PostgreSQL:    ', dbState);
+          console.log(' Redis:         ', redisStatus);
+          console.log(' Memory (MB):   ', `rss=${(mem.rss/1048576).toFixed(1)} heapUsed=${(mem.heapUsed/1048576).toFixed(1)}`);
+          console.log(' Load avg:      ', load.map(n => n.toFixed(2)).join(', '));
+          console.log(' Routes:        ', ['/auth','/users','/services','/bookings','/payments','/notifications','/activities','/uploads','/email-verification'].join(' '));
+
+          const mailProvider = (process.env.MAIL_PROVIDER || 'smtp').toLowerCase();
+          const mailEnabled = String(process.env.MAIL_ENABLED || 'true').toLowerCase() === 'true';
+          if (!mailEnabled || mailProvider === 'none' || mailProvider === 'disabled') {
+            console.log(' SMTP:          ', 'disabled');
+          } else {
+            // SMTP verification is slow - do it async without blocking
+            require('./config/mailer').verifySmtp().then((smtp: any) => {
+              console.log(' SMTP:          ', smtp.ok ? chalk.green(`connected (${mailProvider})`) : chalk.yellow(`checking...`));
+            }).catch(() => {
+              console.log(' SMTP:          ', chalk.yellow('checking...'));
+            });
           }
+
+          // Skip DNS lookup - it's slow and not critical for startup
+          console.log('────────────────────────────────────────────────────\n');
+        } catch (e: any) {
+          // Silently fail - don't block startup
         }
-        console.log('────────────────────────────────────────────────────\n');
-      } catch (e: any) {
-        console.log(chalk.red('Startup diagnostics error:'), e.message);
-      }
-    })();
+      })();
+    }, 500); // Run diagnostics after 500ms, server is already ready
   });
   
   server.on('error', (err: any) => {

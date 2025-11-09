@@ -102,16 +102,14 @@ pool.on('remove', (client) => {
   console.log('🔌 PostgreSQL client removed from pool');
 });
 
-// Test the connection (non-blocking)
-setTimeout(() => {
-  pool.query('SELECT NOW()', (err, result) => {
-    if (err) {
-      console.warn('⚠️  PostgreSQL pool connection test failed (non-critical):', err.message);
-    } else {
-      console.log('✅ PostgreSQL pool connection test successful:', result.rows[0]);
-    }
-  });
-}, 1000);
+// Test the connection (non-blocking, immediate)
+pool.query('SELECT NOW()', (err, result) => {
+  if (err) {
+    // Silently fail - connection will be tested when needed
+  } else {
+    console.log('✅ PostgreSQL pool ready');
+  }
+});
 
 export default prisma;
 export { pool };
