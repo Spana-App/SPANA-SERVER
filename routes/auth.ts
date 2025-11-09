@@ -22,6 +22,7 @@ const loginValidation = [
 router.post('/register', registerValidation, authController.register);
 router.post('/login', loginValidation, authController.login);
 router.get('/me', auth, authController.getMe);
+router.put('/profile', auth, authController.updateProfile);
 
 module.exports = router;
 export {};

@@ -471,6 +471,78 @@ exports.login = async (req: any, res: any) => {
   }
 };
 
+// Update current user profile
+exports.updateProfile = async (req: any, res: any) => {
+  try {
+    const { firstName, lastName, phone } = req.body;
+    
+    // Validate required fields
+    if (!firstName || !lastName) {
+      return res.status(400).json({ message: 'First name and last name are required' });
+    }
+
+    // Prepare update data (email is read-only, so we don't allow it to be changed)
+    const updateData: any = {
+      firstName: firstName.trim(),
+      lastName: lastName.trim()
+    };
+    
+    // Phone is optional
+    if (phone !== undefined) {
+      updateData.phone = phone ? phone.trim() : null;
+    }
+
+    // Update user
+    const updatedUser = await prisma.user.update({
+      where: { id: req.user.id },
+      data: updateData,
+      include: {
+        customer: true,
+        serviceProvider: true
+      }
+    });
+
+    // Shape response by role (same format as getMe)
+    let userResponse: any;
+    if (updatedUser.role === 'customer' && updatedUser.customer) {
+      const { id, email, firstName, lastName, phone, role, isEmailVerified, isPhoneVerified, profileImage, location, walletBalance, status, createdAt, updatedAt } = updatedUser;
+      const { favouriteProviders, totalBookings, ratingGivenAvg } = updatedUser.customer;
+      userResponse = { 
+        _id: id, email, firstName, lastName, phone, role, isVerified: false, isEmailVerified, isPhoneVerified, 
+        profileImage, location, walletBalance, status, 
+        customerDetails: { favouriteProviders, totalBookings, ratingGivenAvg }, 
+        createdAt, updatedAt, __v: 0 
+      };
+    } else if (updatedUser.role === 'service_provider' && updatedUser.serviceProvider) {
+      const { id, email, firstName, lastName, phone, role, isEmailVerified, isPhoneVerified, profileImage, location, walletBalance, status, createdAt, updatedAt } = updatedUser;
+      const { skills, experienceYears, isOnline, rating, totalReviews, isVerified, isIdentityVerified, availability, serviceAreaRadius, serviceAreaCenter, isProfileComplete } = updatedUser.serviceProvider;
+      userResponse = { 
+        _id: id, email, firstName, lastName, phone, role, isVerified, isEmailVerified, isPhoneVerified, isIdentityVerified, 
+        profileImage, skills, experienceYears, isOnline, rating, totalReviews, isProfileComplete, 
+        availability, serviceArea: { radiusInKm: serviceAreaRadius, baseLocation: serviceAreaCenter }, 
+        location, walletBalance, status, createdAt, updatedAt, __v: 0 
+      };
+    } else {
+      // Fallback for admin or other roles
+      userResponse = {
+        _id: updatedUser.id, email: updatedUser.email, firstName: updatedUser.firstName, lastName: updatedUser.lastName, 
+        phone: updatedUser.phone, role: updatedUser.role, isVerified: false, isEmailVerified: updatedUser.isEmailVerified, 
+        isPhoneVerified: updatedUser.isPhoneVerified, profileImage: updatedUser.profileImage, location: updatedUser.location, 
+        walletBalance: updatedUser.walletBalance, status: updatedUser.status, createdAt: updatedUser.createdAt, 
+        updatedAt: updatedUser.updatedAt, __v: 0
+      };
+    }
+
+    res.json({
+      message: 'Profile updated successfully',
+      user: userResponse
+    });
+  } catch (error) {
+    console.error('Update profile error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
 // Get current user
 exports.getMe = async (req: any, res: any) => {
   try {
