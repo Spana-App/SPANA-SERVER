@@ -301,6 +301,7 @@ app.use('/admin', require('./routes/admin'));
 app.use('/password-reset', require('./routes/passwordReset'));
 app.use('/privacy', require('./routes/privacy'));
 app.use('/complaints', require('./routes/complaints'));
+app.use('/stats', require('./routes/stats'));
 
 // Health check endpoint with Redis status
 app.get('/health', async (req: any, res: any) => {

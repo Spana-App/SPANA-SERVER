@@ -1,6 +1,6 @@
 import prisma from '../lib/database';
 const nodeCrypto = require('crypto');
-const { sendVerificationEmail } = require('../config/mailer');
+const { sendVerificationEmail, sendAdminOTPEmail } = require('../config/mailer');
 
 // Helper function to get proper base URL for verification links
 function getBaseUrl(req?: any): string {
@@ -601,6 +601,171 @@ exports.resolveComplaint = async (req: any, res: any) => {
     res.json({ message: 'Complaint resolved', complaint });
   } catch (error) {
     console.error('Resolve complaint error', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// Generate and send OTP for admin login
+exports.requestOTP = async (req: any, res: any) => {
+  try {
+    const { email } = req.body;
+
+    if (!email) {
+      return res.status(400).json({ message: 'Email is required' });
+    }
+
+    // Check if it's an admin email
+    if (!email.toLowerCase().endsWith('@spana.co.za')) {
+      return res.status(400).json({ message: 'OTP is only available for admin emails (@spana.co.za)' });
+    }
+
+    // Find user
+    const user = await prisma.user.findUnique({
+      where: { email: email.toLowerCase() }
+    });
+
+    if (!user || user.role !== 'admin') {
+      return res.status(404).json({ message: 'Admin user not found' });
+    }
+
+    // Generate 6-digit OTP
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    const expiresAt = new Date(Date.now() + 5 * 60 * 60 * 1000); // 5 hours
+
+    // Store OTP in database
+    await prisma.adminOTP.create({
+      data: {
+        adminEmail: email.toLowerCase(),
+        otp,
+        expiresAt,
+        ipAddress: req.ip || req.headers['x-forwarded-for'] || req.connection.remoteAddress,
+        userAgent: req.headers['user-agent']
+      }
+    });
+
+    // Send OTP via email
+    try {
+      await sendAdminOTPEmail({
+        to: email,
+        name: user.firstName || user.email.split('@')[0],
+        otp
+      });
+      
+      res.json({
+        message: 'OTP sent to your email. Please check your inbox.',
+        expiresIn: '5 hours'
+      });
+    } catch (emailError) {
+      console.error('Error sending OTP email:', emailError);
+      res.status(500).json({
+        message: 'Failed to send OTP email. Please check SMTP configuration.',
+        error: emailError.message
+      });
+    }
+  } catch (error) {
+    console.error('Request OTP error', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// Verify OTP and return token
+exports.verifyOTP = async (req: any, res: any) => {
+  try {
+    const { email, otp } = req.body;
+
+    if (!email || !otp) {
+      return res.status(400).json({ message: 'Email and OTP are required' });
+    }
+
+    // Find valid OTP
+    const otpRecord = await prisma.adminOTP.findFirst({
+      where: {
+        adminEmail: email.toLowerCase(),
+        otp,
+        used: false,
+        expiresAt: { gt: new Date() }
+      },
+      orderBy: { createdAt: 'desc' }
+    });
+
+    if (!otpRecord) {
+      return res.status(400).json({ message: 'Invalid or expired OTP' });
+    }
+
+    // Mark OTP as used
+    await prisma.adminOTP.update({
+      where: { id: otpRecord.id },
+      data: {
+        used: true,
+        usedAt: new Date()
+      }
+    });
+
+    // Find user
+    const user = await prisma.user.findUnique({
+      where: { email: email.toLowerCase() },
+      include: { customer: true, serviceProvider: true }
+    });
+
+    if (!user || user.role !== 'admin') {
+      return res.status(404).json({ message: 'Admin user not found' });
+    }
+
+    // Generate token with 5-hour expiry for admins
+    const jwt = require('jsonwebtoken');
+    const token = jwt.sign(
+      { id: user.id },
+      process.env.JWT_SECRET,
+      { expiresIn: '5h' } // 5 hours for admin
+    );
+
+    // Log activity
+    try {
+      await prisma.activity.create({
+        data: {
+          userId: user.id,
+          actionType: 'admin_login_otp',
+          details: { method: 'otp' }
+        }
+      });
+    } catch (_) {}
+
+    // Update last login
+    try {
+      await prisma.user.update({
+        where: { id: user.id },
+        data: { lastLoginAt: new Date() }
+      });
+    } catch (_) {}
+
+    // Shape admin response
+    const userResponse = {
+      _id: user.id,
+      email: user.email,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      phone: user.phone,
+      role: user.role,
+      isVerified: true,
+      isEmailVerified: user.isEmailVerified,
+      isPhoneVerified: user.isPhoneVerified,
+      profileImage: user.profileImage,
+      location: user.location,
+      walletBalance: user.walletBalance,
+      status: user.status,
+      createdAt: user.createdAt,
+      updatedAt: user.updatedAt,
+      __v: 0
+    };
+
+    res.json({
+      message: 'OTP verified successfully',
+      token,
+      user: userResponse,
+      expiresIn: '5 hours'
+    });
+  } catch (error) {
+    console.error('Verify OTP error', error);
     res.status(500).json({ message: 'Server error' });
   }
 };

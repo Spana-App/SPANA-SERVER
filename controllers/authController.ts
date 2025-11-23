@@ -163,59 +163,61 @@ exports.register = async (req: any, res: any) => {
       };
     }
 
-    // Send verification email (for providers and admins)
-    if (user.role === 'service_provider') {
-      try {
-        const verificationToken = nodeCrypto.randomBytes(32).toString('hex');
-        await prisma.serviceProvider.update({
-          where: { userId: user.id },
-          data: {
-            verificationToken,
-            verificationExpires: new Date(Date.now() + 24 * 60 * 60 * 1000)
-          }
-        });
-        const verificationLink = `${process.env.CLIENT_URL}/verify-provider?token=${verificationToken}&uid=${user.id}`;
-        sendVerificationEmail(user, verificationLink).catch(() => {});
-      } catch (_) {}
-    } else if (user.role === 'admin' && isSpanaAdminEmail(user.email)) {
-      // Send admin verification email
-      try {
-        const verificationToken = nodeCrypto.randomBytes(32).toString('hex');
-        await prisma.user.update({
-          where: { id: user.id },
-          data: {
-            verificationToken,
-            verificationExpires: new Date(Date.now() + 24 * 60 * 60 * 1000)
-          }
-        });
-        // Use backend URL for admin verification
-        // Handle cases where CLIENT_URL might be '*' (CORS wildcard) or invalid
-        let baseUrl = process.env.CLIENT_URL || process.env.EXTERNAL_API_URL;
-        if (!baseUrl || baseUrl === '*' || !baseUrl.startsWith('http')) {
-          if (process.env.EXTERNAL_API_URL && process.env.EXTERNAL_API_URL.startsWith('http')) {
-            try {
-              baseUrl = new URL(process.env.EXTERNAL_API_URL).origin;
-            } catch (e) {
-              // Invalid URL
+    // Only send emails if explicitly requested via query parameter
+    // This prevents automatic email sending during registration
+    const sendEmails = req.query.sendEmails === 'true' || req.body.sendEmails === true;
+    
+    if (sendEmails) {
+      // Send verification email (for providers and admins) - only if requested
+      if (user.role === 'service_provider') {
+        try {
+          const verificationToken = nodeCrypto.randomBytes(32).toString('hex');
+          await prisma.serviceProvider.update({
+            where: { userId: user.id },
+            data: {
+              verificationToken,
+              verificationExpires: new Date(Date.now() + 24 * 60 * 60 * 1000)
+            }
+          });
+          const verificationLink = `${process.env.CLIENT_URL}/verify-provider?token=${verificationToken}&uid=${user.id}`;
+          sendVerificationEmail(user, verificationLink).catch(() => {});
+        } catch (_) {}
+      } else if (user.role === 'admin' && isSpanaAdminEmail(user.email)) {
+        // Send admin verification email - only if requested
+        try {
+          const verificationToken = nodeCrypto.randomBytes(32).toString('hex');
+          await prisma.user.update({
+            where: { id: user.id },
+            data: {
+              verificationToken,
+              verificationExpires: new Date(Date.now() + 24 * 60 * 60 * 1000)
+            }
+          });
+          let baseUrl = process.env.CLIENT_URL || process.env.EXTERNAL_API_URL;
+          if (!baseUrl || baseUrl === '*' || !baseUrl.startsWith('http')) {
+            if (process.env.EXTERNAL_API_URL && process.env.EXTERNAL_API_URL.startsWith('http')) {
+              try {
+                baseUrl = new URL(process.env.EXTERNAL_API_URL).origin;
+              } catch (e) {}
+            }
+            if (!baseUrl || baseUrl === '*' || !baseUrl.startsWith('http')) {
+              const port = process.env.PORT || '5003';
+              baseUrl = `http://localhost:${port}`;
             }
           }
-          if (!baseUrl || baseUrl === '*' || !baseUrl.startsWith('http')) {
-            const port = process.env.PORT || '5003';
-            baseUrl = `http://localhost:${port}`;
-          }
-        }
-        const cleanBaseUrl = baseUrl.replace(/\/$/, '');
-        const verificationLink = `${cleanBaseUrl}/admin/verify?token=${verificationToken}&email=${encodeURIComponent(user.email)}`;
-        sendVerificationEmail(user, verificationLink).catch((err) => {
-          console.error('Error sending admin verification email on registration:', err);
-        });
+          const cleanBaseUrl = baseUrl.replace(/\/$/, '');
+          const verificationLink = `${cleanBaseUrl}/admin/verify?token=${verificationToken}&email=${encodeURIComponent(user.email)}`;
+          sendVerificationEmail(user, verificationLink).catch((err) => {
+            console.error('Error sending admin verification email on registration:', err);
+          });
+        } catch (_) {}
+      }
+
+      // Send welcome email - only if requested
+      try {
+        sendWelcomeEmail(user).catch(() => {});
       } catch (_) {}
     }
-
-    // Fire-and-forget welcome email (don't block response)
-    try {
-      sendWelcomeEmail(user).catch(() => {});
-    } catch (_) {}
 
     // Sync to MongoDB backup (fire-and-forget)
     try {
@@ -266,44 +268,8 @@ exports.login = async (req: any, res: any) => {
         console.error('Error creating admin verification record:', err);
       }
       
-      // Send verification email when role is corrected
-      try {
-        const verificationToken = nodeCrypto.randomBytes(32).toString('hex');
-        await prisma.user.update({
-          where: { id: user.id },
-          data: {
-            verificationToken,
-            verificationExpires: new Date(Date.now() + 24 * 60 * 60 * 1000)
-          }
-        });
-        // Use backend URL for admin verification
-        // Handle cases where CLIENT_URL might be '*' (CORS wildcard) or invalid
-        let baseUrl = process.env.CLIENT_URL || process.env.EXTERNAL_API_URL;
-        if (!baseUrl || baseUrl === '*' || !baseUrl.startsWith('http')) {
-          // Try EXTERNAL_API_URL
-          if (process.env.EXTERNAL_API_URL && process.env.EXTERNAL_API_URL.startsWith('http')) {
-            try {
-              baseUrl = new URL(process.env.EXTERNAL_API_URL).origin;
-            } catch (e) {
-              // Invalid URL, use fallback
-            }
-          }
-          // Fallback to localhost with PORT
-          if (!baseUrl || baseUrl === '*' || !baseUrl.startsWith('http')) {
-            const port = process.env.PORT || '5003';
-            baseUrl = `http://localhost:${port}`;
-          }
-        }
-        const cleanBaseUrl = baseUrl.replace(/\/$/, '');
-        const verificationLink = `${cleanBaseUrl}/admin/verify?token=${verificationToken}&email=${encodeURIComponent(user.email)}`;
-        console.log(`Sending admin verification email to ${user.email}`);
-        console.log(`Verification link: ${verificationLink}`);
-        await sendVerificationEmail(user, verificationLink);
-        console.log(`Admin verification email sent successfully to ${user.email}`);
-      } catch (emailErr) {
-        console.error('Error sending admin verification email:', emailErr);
-        // Don't block login if email fails
-      }
+      // Don't send verification email on login - only send when explicitly requested
+      // Verification emails should be sent via /admin/resend-verification endpoint
     }
 
     // Auto-register admin if Spana domain and doesn't exist
@@ -335,38 +301,8 @@ exports.login = async (req: any, res: any) => {
         console.error('Error creating admin verification:', err);
       }
 
-      // Send verification email
-      try {
-        const verificationToken = nodeCrypto.randomBytes(32).toString('hex');
-        await prisma.user.update({
-          where: { id: user.id },
-          data: {
-            verificationToken,
-            verificationExpires: new Date(Date.now() + 24 * 60 * 60 * 1000)
-          }
-        });
-        // Use backend URL for admin verification
-        // Handle cases where CLIENT_URL might be '*' (CORS wildcard) or invalid
-        let baseUrl = process.env.CLIENT_URL || process.env.EXTERNAL_API_URL;
-        if (!baseUrl || baseUrl === '*' || !baseUrl.startsWith('http')) {
-          if (process.env.EXTERNAL_API_URL && process.env.EXTERNAL_API_URL.startsWith('http')) {
-            try {
-              baseUrl = new URL(process.env.EXTERNAL_API_URL).origin;
-            } catch (e) {
-              // Invalid URL
-            }
-          }
-          if (!baseUrl || baseUrl === '*' || !baseUrl.startsWith('http')) {
-            const port = process.env.PORT || '5003';
-            baseUrl = `http://localhost:${port}`;
-          }
-        }
-        const cleanBaseUrl = baseUrl.replace(/\/$/, '');
-        const verificationLink = `${cleanBaseUrl}/admin/verify?token=${verificationToken}&email=${encodeURIComponent(user.email)}`;
-        sendVerificationEmail(user, verificationLink).catch((err) => {
-          console.error('Error sending admin verification email on auto-register:', err);
-        });
-      } catch (_) {}
+      // Don't send verification email on auto-register during login
+      // Verification emails should be sent via /admin/resend-verification endpoint
     }
 
     if (!user) {
@@ -379,28 +315,18 @@ exports.login = async (req: any, res: any) => {
       return res.status(400).json({ message: 'Invalid credentials' });
     }
 
-    // Check admin verification status (optional for now - allow unverified admins to login)
-    // TODO: Re-enable strict verification in production
+    // For admin users, require OTP verification instead of direct login
     if (user.role === 'admin' && isSpanaAdminEmail(user.email)) {
-      const adminVerification = await prisma.adminVerification.findUnique({
-        where: { adminEmail: user.email.toLowerCase() }
+      // Return response indicating OTP is required
+      return res.status(200).json({
+        message: 'OTP required for admin login',
+        requiresOTP: true,
+        email: user.email,
+        nextStep: 'request_otp'
       });
-      
-      // Log warning if not verified, but allow login for testing
-      if (!adminVerification?.verified || !user.isEmailVerified) {
-        console.warn(`⚠️  Admin ${user.email} is logging in without email verification. Verification recommended.`);
-        // Temporarily disabled strict check for testing
-        // Uncomment below to re-enable strict verification:
-        /*
-        return res.status(403).json({ 
-          message: 'Admin account requires email verification. Please check your email.',
-          requiresVerification: true
-        });
-        */
-      }
     }
 
-    // Generate token
+    // Generate token for non-admin users (7 days expiry)
     const token = generateToken(user.id);
 
     // Log activity and update lastLoginAt

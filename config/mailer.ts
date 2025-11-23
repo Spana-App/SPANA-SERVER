@@ -331,6 +331,43 @@ async function sendInvoiceEmail({ to, name, invoiceNumber, bookingId, serviceTit
   return sendMail({ to, subject, text, html });
 }
 
+function buildAdminOTPEmail({ name, otp }: any) {
+  const subject = 'Your Spana Admin Login OTP';
+  const text = `Hi ${name},\n\nYour 6-digit OTP for admin login is: ${otp}\n\nThis OTP expires in 5 hours.\n\nIf you didn't request this, please contact support immediately.\n\nThanks,\nThe Spana Team`;
+  const html = `
+    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background-color: #f9f9f9;">
+      <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 30px; text-align: center; border-radius: 10px 10px 0 0;">
+        <h1 style="color: white; margin: 0; font-size: 28px;">Admin Login OTP 🔐</h1>
+      </div>
+      <div style="background: white; padding: 30px; border-radius: 0 0 10px 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
+        <h2 style="color: #333; margin-top: 0;">Hello ${name}!</h2>
+        <p style="color: #666; line-height: 1.6; font-size: 16px;">
+          You've requested to log in to the Spana Admin Panel. Use the OTP below to complete your login.
+        </p>
+        <div style="background: #f8f9fa; border: 2px dashed #667eea; padding: 20px; text-align: center; margin: 30px 0; border-radius: 8px;">
+          <p style="color: #999; font-size: 14px; margin: 0 0 10px 0;">Your 6-digit OTP:</p>
+          <p style="color: #667eea; font-size: 36px; font-weight: bold; letter-spacing: 8px; margin: 0; font-family: 'Courier New', monospace;">${otp}</p>
+        </div>
+        <p style="color: #666; line-height: 1.6; font-size: 16px;">
+          This OTP will expire in <strong>5 hours</strong> for your security.
+        </p>
+        <p style="color: #ff6b6b; font-size: 14px; text-align: center; margin-top: 20px;">
+          ⚠️ If you didn't request this OTP, please contact support immediately. Your account may be at risk.
+        </p>
+      </div>
+      <div style="text-align: center; margin-top: 20px; color: #999; font-size: 12px;">
+        <p>© 2024 Spana. All rights reserved.</p>
+      </div>
+    </div>
+  `;
+  return { subject, text, html };
+}
+
+async function sendAdminOTPEmail({ to, name, otp }: any) {
+  const { subject, text, html } = buildAdminOTPEmail({ name, otp });
+  return sendMail({ to, subject, text, html });
+}
+
 module.exports = {
   sendMail,
   sendWelcomeEmail,
@@ -340,6 +377,7 @@ module.exports = {
   sendReceiptEmail,
   sendPasswordResetEmail,
   sendInvoiceEmail,
+  sendAdminOTPEmail,
   async verifySmtp() {
     try {
       // Check if SMTP is disabled first

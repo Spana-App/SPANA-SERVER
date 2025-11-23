@@ -659,22 +659,88 @@ exports.confirmPayment = async (req, res) => {
       return res.status(400).json({ message: 'Customer profile not found' });
     }
 
+    // Check booking status - must be pending_payment
+    const booking = await prisma.booking.findUnique({
+      where: { id: bookingId },
+      include: {
+        service: {
+          include: {
+            provider: {
+              include: { user: true }
+            }
+          }
+        }
+      }
+    });
+
+    if (!booking) {
+      return res.status(404).json({ message: 'Booking not found' });
+    }
+
+    if (booking.status !== 'pending_payment') {
+      return res.status(400).json({ 
+        message: `Booking cannot be paid. Current status: ${booking.status}` 
+      });
+    }
+
+    // Calculate commission and escrow amounts
+    const totalAmount = parseFloat(amount);
+    const commissionRate = 0.15;
+    const commissionAmount = totalAmount * commissionRate;
+    const providerPayout = totalAmount - commissionAmount;
+
     const payment = await prisma.payment.create({
       data: {
         customerId: customer.id,
         bookingId,
-        amount: parseFloat(amount),
-        paymentMethod: paymentMethod || 'manual',
+        amount: totalAmount,
+        currency: 'ZAR',
+        paymentMethod: paymentMethod || 'payfast',
         status: 'completed',
-        transactionId: paymentIntentId || ('sim_' + Math.random().toString(36).substr(2, 9))
+        transactionId: paymentIntentId || ('sim_' + Math.random().toString(36).substr(2, 9)),
+        escrowStatus: 'held',
+        commissionRate,
+        commissionAmount,
+        providerPayout
       }
     });
 
-    // Update booking status to confirmed
+    // Update booking: Payment received, now send to provider
     await prisma.booking.update({
       where: { id: bookingId },
-      data: { status: 'confirmed' }
+      data: { 
+        status: 'pending', // Now waiting for provider acceptance
+        paymentStatus: 'paid_to_escrow',
+        escrowAmount: totalAmount,
+        commissionAmount,
+        providerPayoutAmount: providerPayout
+      }
     });
+
+    // Notify provider via socket that a paid booking is available
+    try {
+      const app = require('../server');
+      const io = app.get && app.get('io');
+      if (io && booking.service.provider.user.id) {
+        io.to(booking.service.provider.user.id).emit('new-booking-request', {
+          bookingId: booking.id,
+          service: booking.service.title,
+          customer: `${req.user.firstName} ${req.user.lastName}`,
+          date: booking.date,
+          time: booking.time,
+          location: booking.location,
+          amount: totalAmount,
+          paymentReceived: true
+        });
+      }
+    } catch (_) {}
+
+    // Update workflow: Payment Received
+    try {
+      const workflowController = require('../controllers/serviceWorkflowController');
+      await workflowController.updateWorkflowStepByName(bookingId, 'Payment Required', 'completed', 'Payment received');
+      await workflowController.updateWorkflowStepByName(bookingId, 'Provider Assigned', 'pending', 'Waiting for provider acceptance');
+    } catch (_) {}
 
     try {
       await prisma.activity.create({

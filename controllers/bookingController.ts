@@ -45,7 +45,8 @@ exports.createBooking = async (req: any, res: any) => {
       return res.status(404).json({ message: 'Customer profile not found' });
     }
 
-    // Create booking request (status: pending, requestStatus: pending)
+    // Create booking request - Customer must pay first before provider allocation
+    // Status: pending_payment (waiting for payment)
     const booking = await prisma.booking.create({
       data: {
         customerId: customer.id,
@@ -59,8 +60,9 @@ exports.createBooking = async (req: any, res: any) => {
         basePrice: basePrice,
         jobSizeMultiplier: multiplier,
         calculatedPrice: calculatedPrice,
-        status: 'pending',
-        requestStatus: 'pending' // NEW: Request status
+        status: 'pending_payment', // NEW: Waiting for payment
+        requestStatus: 'pending', // Will be sent to providers after payment
+        paymentStatus: 'pending' // Payment required
       },
       include: {
         service: {
@@ -126,8 +128,11 @@ exports.createBooking = async (req: any, res: any) => {
     }
 
     res.status(201).json({
-      message: 'Booking request created. Waiting for provider acceptance.',
-      booking: responseBooking
+      message: 'Booking created. Payment required before provider allocation.',
+      booking: responseBooking,
+      paymentRequired: true,
+      amount: calculatedPrice,
+      nextStep: 'payment'
     });
   } catch (error) {
     console.error(error);
@@ -168,6 +173,14 @@ exports.acceptBookingRequest = async (req: any, res: any) => {
       return res.status(403).json({ message: 'Not authorized' });
     }
 
+    // Check if payment has been made (customer pays first)
+    if (booking.paymentStatus !== 'paid_to_escrow') {
+      return res.status(400).json({ 
+        message: 'Payment must be completed before provider can accept booking',
+        paymentRequired: true
+      });
+    }
+
     if (booking.requestStatus !== 'pending') {
       return res.status(400).json({ message: 'Booking request already processed' });
     }
@@ -178,7 +191,7 @@ exports.acceptBookingRequest = async (req: any, res: any) => {
       data: {
         requestStatus: 'accepted',
         providerAcceptedAt: new Date(),
-        status: 'confirmed' // Ready for payment
+        status: 'confirmed' // Payment already received, ready to start
       },
       include: {
         service: {
@@ -926,6 +939,7 @@ exports.updateBookingStatus = async (req: any, res: any) => {
 // Cancel booking
 exports.cancelBooking = async (req: any, res: any) => {
   try {
+    const { reason } = req.body;
     let booking = await prisma.booking.findUnique({
       where: { id: req.params.id },
       include: {
@@ -934,7 +948,8 @@ exports.cancelBooking = async (req: any, res: any) => {
           include: {
             user: true
           }
-        }
+        },
+        payment: true
       }
     });
 
@@ -958,20 +973,54 @@ exports.cancelBooking = async (req: any, res: any) => {
       }
     }
 
-    
+    // Check if booking can be cancelled
+    if (booking.status === 'cancelled') {
+      return res.status(400).json({ message: 'Booking is already cancelled' });
+    }
 
-    booking = await prisma.booking.update({
+    if (booking.status === 'completed') {
+      return res.status(400).json({ message: 'Cannot cancel a completed booking' });
+    }
+
+    // Process refund if payment was made
+    let refundInfo = null;
+    if (booking.payment && booking.payment.status === 'completed' && booking.payment.escrowStatus === 'held') {
+      // Update payment to refunded
+      await prisma.payment.update({
+        where: { id: booking.payment.id },
+        data: {
+          status: 'refunded',
+          escrowStatus: 'refunded'
+        }
+      });
+
+      refundInfo = {
+        status: 'processing',
+        amount: booking.payment.amount,
+        refundMethod: 'original_payment_method',
+        estimatedTime: '3-5 business days'
+      };
+    }
+
+    const updatedBooking = await prisma.booking.update({
       where: { id: booking.id },
-      data: { status: 'cancelled' },
+      data: { 
+        status: 'cancelled',
+        paymentStatus: refundInfo ? 'refunded' : booking.paymentStatus,
+        declineReason: reason // Using declineReason field from schema
+      },
       include: {
         service: true,
         customer: {
           include: {
             user: true
           }
-        }
+        },
+        payment: true
       }
     });
+    
+    booking = updatedBooking;
     try {
       await prisma.activity.create({ 
         data: { 
@@ -999,8 +1048,14 @@ exports.cancelBooking = async (req: any, res: any) => {
         }
       }
     } catch (_) {}
-    res.json(booking);
+
+    res.json({
+      message: 'Booking cancelled. Refund processing.',
+      booking: updatedBooking,
+      refund: refundInfo
+    });
   } catch (error) {
+    console.error('Cancel booking error:', error);
     res.status(500).json({ message: 'Server error' });
   }
 };

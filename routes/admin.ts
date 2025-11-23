@@ -8,6 +8,10 @@ const authorize = require('../middleware/roles');
 router.get('/verify', adminController.verifyAdmin);
 router.post('/resend-verification', adminController.resendVerificationEmail);
 
+// Admin OTP authentication
+router.post('/otp/request', adminController.requestOTP);
+router.post('/otp/verify', adminController.verifyOTP);
+
 // Document verification
 router.get('/documents/pending', auth, authorize('admin'), adminController.getPendingDocuments);
 router.put('/documents/:docId/verify', auth, authorize('admin'), adminController.verifyDocument);

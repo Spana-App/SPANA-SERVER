@@ -96,6 +96,11 @@ model ServiceProvider {
   verificationToken String?
   verificationExpires DateTime?
   
+  // Application status
+  applicationStatus String   @default("pending") // 'pending', 'approved', 'rejected', 'active'
+  applicationId     String?  @unique
+  application       ServiceProviderApplication? @relation(fields: [applicationId], references: [id])
+  
   // Availability (JSON for flexibility)
   availability      Json?    // { days: string[], hours: { start: string, end: string } }
   
@@ -110,6 +115,7 @@ model ServiceProvider {
   user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   documents         Document[]
   services          Service[]
+  payouts           ProviderPayout[]
   
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
@@ -258,6 +264,7 @@ model Document {
   // Relations
   providerId String
   provider   ServiceProvider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  verification DocumentVerification?
   
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -422,4 +429,107 @@ model Complaint {
   updatedAt    DateTime @updatedAt
   
   @@map("complaints")
+}
+
+// NEW: Service Provider Application
+model ServiceProviderApplication {
+  id            String   @id @default(cuid())
+  email         String   @unique
+  firstName     String
+  lastName      String
+  phone         String
+  status        String   @default("pending") // 'pending', 'approved', 'rejected', 'invited'
+  
+  // Application details
+  skills        String[] @default([])
+  experienceYears Int    @default(0)
+  motivation    String?  // Why they want to join
+  location      Json?    // { type: "Point", coordinates: [lng, lat], address: string }
+  
+  // Admin actions
+  reviewedBy    String?  // Admin user ID
+  reviewedAt    DateTime?
+  rejectionReason String?
+  invitationToken String? @unique
+  invitationExpires DateTime?
+  invitationSentAt DateTime?
+  
+  // Relations
+  provider      ServiceProvider? @relation
+  
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  
+  @@map("service_provider_applications")
+}
+
+// NEW: Admin OTP Session
+model AdminOTP {
+  id            String   @id @default(cuid())
+  adminEmail    String
+  otp           String   // 6-digit OTP
+  expiresAt     DateTime // 5 hours from creation
+  used          Boolean  @default(false)
+  usedAt        DateTime?
+  ipAddress     String?
+  userAgent     String?
+  
+  createdAt     DateTime @default(now())
+  
+  @@index([adminEmail, otp])
+  @@map("admin_otps")
+}
+
+// NEW: Document Verification (Third-party integration)
+model DocumentVerification {
+  id            String   @id @default(cuid())
+  documentId    String
+  document      Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  
+  // Third-party verification
+  provider      String   @default("datanamix") // 'datanamix', 'manual', 'other'
+  externalId    String?  // ID from third-party service
+  status        String   @default("pending") // 'pending', 'verified', 'failed', 'rejected'
+  verificationData Json?  // Response from third-party service
+  
+  // Admin override
+  adminVerified Boolean  @default(false)
+  adminVerifiedBy String?
+  adminVerifiedAt DateTime?
+  adminNotes    String?
+  
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  
+  @@unique([documentId])
+  @@map("document_verifications")
+}
+
+// NEW: Provider Payout Tracking
+model ProviderPayout {
+  id            String   @id @default(cuid())
+  providerId    String
+  provider      ServiceProvider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  
+  // Payout details
+  periodStart   DateTime
+  periodEnd     DateTime
+  totalEarnings Float    @default(0)
+  commission    Float    @default(0)
+  netAmount     Float    // totalEarnings - commission
+  status        String   @default("pending") // 'pending', 'processing', 'paid', 'failed'
+  
+  // Payment details
+  paymentMethod String?  // 'bank_transfer', 'mobile_money', etc.
+  paymentReference String?
+  paidAt        DateTime?
+  paidBy        String?   // Admin user ID
+  
+  // Related bookings
+  bookingIds    String[] @default([]) // Array of booking IDs included in this payout
+  
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  
+  @@map("provider_payouts")
 }
