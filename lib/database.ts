@@ -62,7 +62,10 @@ if (process.env.POSTGRES_SSL === 'true') {
   shouldUseSSL = false;
 } else {
   // Auto-detect based on database type
-  shouldUseSSL = isNeonDatabase || isNeonUrl || isExternalRenderUrl || 
+  // Render external databases (with .render.com) always need SSL
+  const isRenderExternal = isExternalRenderUrl || 
+                          (dbUrlParsed?.host && dbUrlParsed.host.includes('.render.com'));
+  shouldUseSSL = isNeonDatabase || isNeonUrl || isRenderExternal || 
                  (dbUrlParsed?.ssl && (dbUrlParsed.ssl === 'require' || dbUrlParsed.ssl === 'prefer'));
 }
 
@@ -95,11 +98,16 @@ declare global {
 let databaseUrl: string;
 if (process.env.DATABASE_URL) {
   databaseUrl = process.env.DATABASE_URL;
-  // Ensure SSL is configured for Neon databases if not already in URL
-  if (isNeonDatabase && !databaseUrl.includes('sslmode') && !databaseUrl.includes('ssl=')) {
+  // Ensure SSL is configured for external databases if not already in URL
+  // Check if hostname contains .render.com (Render external) or .neon.tech (Neon)
+  const hostname = dbUrlParsed?.host || '';
+  const isRenderExternalDB = hostname.includes('.render.com');
+  const isNeonDB = hostname.includes('.neon.tech') || isNeonDatabase;
+  
+  if ((isNeonDB || isRenderExternalDB) && !databaseUrl.includes('sslmode') && !databaseUrl.includes('ssl=')) {
     const separator = databaseUrl.includes('?') ? '&' : '?';
     databaseUrl = `${databaseUrl}${separator}sslmode=require`;
-    console.log('🔒 Added SSL requirement for Neon database connection');
+    console.log('🔒 Added SSL requirement for external database connection');
   }
 } else {
   const sslParam = shouldUseSSL ? '?sslmode=require' : '';
@@ -140,7 +148,7 @@ if (dbUrlParsed) {
 console.log('  Final URL:', databaseUrl.replace(/:[^:@]+@/, ':***@')); // Hide password in logs
 
 const prisma = globalThis.__prisma || new PrismaClient({
-  log: process.env.NODE_ENV === 'development' ? ['query', 'error', 'warn'] : ['error'],
+  log: process.env.NODE_ENV === 'development' ? ['error', 'warn'] : ['error'], // Removed 'query' to reduce memory usage
   datasources: {
     db: {
       url: databaseUrl

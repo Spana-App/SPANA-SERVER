@@ -8,7 +8,8 @@ const chalk = require('chalk');
 const redis = require('redis');
 const { promisify } = require('util');
 const os = require('os');
-const dns = require('dns').promises;
+// DNS lookup removed - not needed and causes memory issues
+// const dns = require('dns').promises;
 const { verifySmtp } = require('./config/mailer');
 
 // Import routes
@@ -258,10 +259,12 @@ if (require.main === module) {
 }
 
 // Add caching middleware for GET requests using cache abstraction or Redis if enabled
-const { get: cacheGet, set: cacheSet } = require('./cache');
+// Cache middleware - lazy load to avoid memory issues at startup
 app.use('/services', async (req: any, res: any, next: any) => {
   if (req.method !== 'GET') return next();
   try {
+    // Lazy load cache module to avoid memory issues
+    const { get: cacheGet, set: cacheSet } = require('./lib/cache');
     const cacheKey = `services:${req.originalUrl}`;
     const cachedData = await cacheGet(cacheKey);
     if (cachedData) {
@@ -281,7 +284,7 @@ app.use('/services', async (req: any, res: any, next: any) => {
 
     next();
   } catch (err) {
-    console.error(chalk.red('❌  Cache middleware error:'), err);
+    // If cache module doesn't exist, just continue without caching
     next();
   }
 });
@@ -552,6 +555,11 @@ process.on('SIGTERM', gracefulShutdown);
 
 // Make Redis client available app-wide
 app.set('redisClient', redisClient);
+
+// Export Redis functions for cache module (lazy loaded to avoid circular dependency)
+(module.exports as any).redisGet = redisGet;
+(module.exports as any).redisSet = redisSet;
+(module.exports as any).redisDel = redisDel;
 app.set('redisGet', redisGet);
 app.set('redisSet', redisSet);
 app.set('redisDel', redisDel);

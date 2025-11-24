@@ -3,8 +3,8 @@ services:
     name: spana-backend
     env: node
     plan: free
-    buildCommand: npm install && npx prisma generate
-    startCommand: npm run dev
+    buildCommand: npm install
+    startCommand: npm start
     envVars:
       - key: NODE_ENV
         value: production

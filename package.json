@@ -4,8 +4,8 @@
   "description": "Backend for Spana service marketplace app",
   "main": "server.ts",
   "scripts": {
-    "start": "node dist/server.js",
-    "dev": "nodemon --watch \"**/*.ts\" --exec ts-node server.ts",
+    "start": "node --max-old-space-size=4096 -r ts-node/register server.ts",
+    "dev": "nodemon --watch \"**/*.ts\" --exec \"node --max-old-space-size=4096 -r ts-node/register server.ts\"",
     "build": "tsc && npx prisma generate",
     "test": "jest",
     "setup:env": "node scripts/setupEnv.js",
