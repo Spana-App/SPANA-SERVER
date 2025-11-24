@@ -4,7 +4,9 @@ services:
     env: node
     plan: free
     buildCommand: npm install && npm run build
-    startCommand: npm start
+    startCommand: node dist/server.js
+    # IMPORTANT: Make sure buildCommand runs BEFORE startCommand
+    # Build compiles TypeScript to dist/ folder
     envVars:
       - key: NODE_ENV
         value: production
