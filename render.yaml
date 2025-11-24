@@ -18,3 +18,5 @@ services:
         generateValue: true
       - key: CLIENT_URL
         value: https://your-frontend-domain.com
+      - key: NODE_OPTIONS
+        value: --max-old-space-size=4096
