@@ -69,8 +69,8 @@ const initSocket = (server: any) => {
   const socketIo = require('socket.io');
   const io = socketIo(server, {
     cors: {
-      origin: process.env.CLIENT_URL,
-      methods: ['GET', 'POST']
+      origin: "*",
+      methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS']
     }
   });
 
@@ -179,9 +179,15 @@ const initSocket = (server: any) => {
 
 // Security middleware
 app.use(helmet());
+// CORS configuration - allow all origins for development
+// Note: credentials: true with origin: "*" doesn't work in browsers
+// If you need credentials, specify allowed origins in an array
 app.use(cors({
-  origin: process.env.CLIENT_URL,
-  credentials: true
+  origin: "*",
+  credentials: false, // Set to false when using "*" origin
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+  exposedHeaders: ['X-Cache']
 }));
 
 // Custom Redis store for rate limiting
