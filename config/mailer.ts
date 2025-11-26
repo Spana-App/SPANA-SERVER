@@ -29,6 +29,9 @@ function getTransporter() {
   const maxMessages = parseInt(process.env.SMTP_MAX_MESSAGES || '100', 10);
   const provider = (process.env.MAIL_PROVIDER || 'smtp').toLowerCase();
   const sendgridApiKey = process.env.SENDGRID_API_KEY;
+  
+  // Connection timeout settings (in milliseconds)
+  // Connection timeout settings (in milliseconds) - removed unused vars
 
   if (!host || !user || !pass) {
     throw new Error('SMTP configuration is missing. Please set SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS');
@@ -49,11 +52,15 @@ function getTransporter() {
       maxConnections: maxConnections,
       maxMessages: maxMessages,
       requireTLS: true,
-      connectionTimeout: parseInt(process.env.SMTP_CONNECTION_TIMEOUT || '10000', 10),
+      connectionTimeout: parseInt(process.env.SMTP_CONNECTION_TIMEOUT || '30000', 10), // Increased to 30s
+      socketTimeout: parseInt(process.env.SMTP_SOCKET_TIMEOUT || '30000', 10), // 30s socket timeout
+      greetingTimeout: parseInt(process.env.SMTP_GREETING_TIMEOUT || '5000', 10), // 5s greeting timeout
       tls: {
         ciphers: process.env.SMTP_TLS_CIPHERS || 'TLSv1.2',
         rejectUnauthorized: process.env.SMTP_REJECT_UNAUTHORIZED ? process.env.SMTP_REJECT_UNAUTHORIZED === 'true' : false
-      }
+      },
+      debug: process.env.SMTP_DEBUG === 'true', // Enable debug logging
+      logger: process.env.SMTP_DEBUG === 'true' // Enable logger
     });
   } else {
     // sensible defaults for Office365 or generic SMTP
@@ -100,9 +107,21 @@ async function sendMail({ to, subject, text, html, from, attachments }: any) {
     if (text) mailOptions.text = text;
     if (html) mailOptions.html = html;
     if (attachments) mailOptions.attachments = attachments;
-    return transporter.sendMail(mailOptions);
+    
+    console.log(`[SMTP] Attempting to send email to ${to} via ${process.env.SMTP_HOST}:${process.env.SMTP_PORT}`);
+    const result = await transporter.sendMail(mailOptions);
+    console.log(`[SMTP] Email sent successfully to ${to}. MessageId: ${result.messageId}`);
+    return result;
   } catch (error: any) {
-    console.error('[SMTP Error] Failed to send email:', error.message);
+    console.error('[SMTP Error] Failed to send email:', {
+      to,
+      subject,
+      error: error.message,
+      code: error.code,
+      command: error.command,
+      host: process.env.SMTP_HOST,
+      port: process.env.SMTP_PORT
+    });
     // Re-throw to allow calling code to handle the error
     throw error;
   }
