@@ -179,12 +179,10 @@ const initSocket = (server: any) => {
 
 // Security middleware
 app.use(helmet());
-// CORS configuration - allow all origins for development
-// Note: credentials: true with origin: "*" doesn't work in browsers
-// If you need credentials, specify allowed origins in an array
+// CORS configuration - allow all origins with wildcard
 app.use(cors({
   origin: "*",
-  credentials: false, // Set to false when using "*" origin
+  credentials: false, // Must be false when using "*" origin
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
   exposedHeaders: ['X-Cache']

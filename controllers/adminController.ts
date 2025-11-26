@@ -107,10 +107,10 @@ exports.resendVerificationEmail = async (req: any, res: any) => {
   }
 };
 
-// Verify admin email
+// Verify admin email - Shows confetti page with OTP
 exports.verifyAdmin = async (req: any, res: any) => {
   try {
-    const { token, email } = req.query;
+    const { token, email, otp } = req.query;
 
     const user = await prisma.user.findFirst({
       where: {
@@ -121,9 +121,36 @@ exports.verifyAdmin = async (req: any, res: any) => {
     });
 
     if (!user) {
-      return res.status(400).json({ message: 'Invalid or expired token' });
+      return res.status(400).send(`
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <title>Invalid Token</title>
+          <style>body { font-family: Arial; text-align: center; padding: 50px; }</style>
+        </head>
+        <body>
+          <h1>❌ Invalid or Expired Token</h1>
+          <p>The verification link is invalid or has expired.</p>
+        </body>
+        </html>
+      `);
     }
 
+    // Get the OTP from query or find the latest valid OTP
+    let otpCode = otp;
+    if (!otpCode) {
+      const otpRecord = await prisma.adminOTP.findFirst({
+        where: {
+          adminEmail: email.toLowerCase(),
+          used: false,
+          expiresAt: { gt: new Date() }
+        },
+        orderBy: { createdAt: 'desc' }
+      });
+      otpCode = otpRecord?.otp;
+    }
+
+    // Mark email as verified
     await prisma.user.update({
       where: { id: user.id },
       data: {
@@ -142,10 +169,194 @@ exports.verifyAdmin = async (req: any, res: any) => {
       }
     });
 
-    res.json({ message: 'Admin verified successfully' });
+    // Show confetti page with OTP
+    const html = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <title>Welcome to SPANA Admin! 🎉</title>
+        <style>
+          * { margin: 0; padding: 0; box-sizing: border-box; }
+          body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+            position: relative;
+          }
+          .container {
+            background: white;
+            padding: 60px 40px;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            text-align: center;
+            max-width: 500px;
+            z-index: 10;
+            position: relative;
+          }
+          h1 {
+            font-size: 48px;
+            margin-bottom: 20px;
+            color: #667eea;
+          }
+          .welcome-text {
+            font-size: 24px;
+            color: #333;
+            margin-bottom: 30px;
+          }
+          .otp-container {
+            background: #f7f7f7;
+            border: 2px dashed #667eea;
+            border-radius: 12px;
+            padding: 30px;
+            margin: 30px 0;
+          }
+          .otp-label {
+            font-size: 14px;
+            color: #666;
+            margin-bottom: 10px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+          }
+          .otp-code {
+            font-size: 48px;
+            font-weight: bold;
+            color: #667eea;
+            letter-spacing: 8px;
+            font-family: 'Courier New', monospace;
+            margin: 10px 0;
+            padding: 10px;
+            background: white;
+            border-radius: 8px;
+          }
+          .copy-btn {
+            background: #667eea;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 8px;
+            font-size: 16px;
+            cursor: pointer;
+            margin-top: 10px;
+            transition: all 0.3s;
+          }
+          .copy-btn:hover {
+            background: #5568d3;
+            transform: translateY(-2px);
+          }
+          .copy-btn:active {
+            transform: translateY(0);
+          }
+          .instructions {
+            color: #666;
+            font-size: 14px;
+            margin-top: 30px;
+            line-height: 1.6;
+          }
+          .confetti {
+            position: fixed;
+            width: 10px;
+            height: 10px;
+            background: #667eea;
+            position: absolute;
+            animation: confetti-fall 3s linear infinite;
+          }
+          @keyframes confetti-fall {
+            0% {
+              transform: translateY(-100vh) rotate(0deg);
+              opacity: 1;
+            }
+            100% {
+              transform: translateY(100vh) rotate(720deg);
+              opacity: 0;
+            }
+          }
+          .success-icon {
+            font-size: 80px;
+            margin-bottom: 20px;
+            animation: bounce 1s ease infinite;
+          }
+          @keyframes bounce {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-20px); }
+          }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <div class="success-icon">🎉</div>
+          <h1>Welcome to SPANA!</h1>
+          <p class="welcome-text">Your admin account has been verified!</p>
+          
+          <div class="otp-container">
+            <div class="otp-label">Your Login OTP Code</div>
+            <div class="otp-code" id="otpCode">${otpCode || 'N/A'}</div>
+            <button class="copy-btn" onclick="copyOTP()">Copy OTP</button>
+          </div>
+          
+          <div class="instructions">
+            <p><strong>Next Steps:</strong></p>
+            <p>1. Copy the OTP code above</p>
+            <p>2. Use it to login via the admin login page</p>
+            <p>3. OTP expires in 5 hours</p>
+            <p style="margin-top: 20px; color: #999; font-size: 12px;">
+              This OTP has also been sent to your email: ${user.email}
+            </p>
+          </div>
+        </div>
+        
+        <script>
+          // Confetti animation
+          const colors = ['#667eea', '#764ba2', '#f093fb', '#4facfe', '#00f2fe'];
+          for (let i = 0; i < 50; i++) {
+            setTimeout(() => {
+              const confetti = document.createElement('div');
+              confetti.className = 'confetti';
+              confetti.style.left = Math.random() * 100 + '%';
+              confetti.style.background = colors[Math.floor(Math.random() * colors.length)];
+              confetti.style.animationDelay = Math.random() * 3 + 's';
+              confetti.style.width = (Math.random() * 10 + 5) + 'px';
+              confetti.style.height = (Math.random() * 10 + 5) + 'px';
+              document.body.appendChild(confetti);
+              
+              setTimeout(() => confetti.remove(), 3000);
+            }, i * 50);
+          }
+          
+          function copyOTP() {
+            const otp = document.getElementById('otpCode').textContent;
+            navigator.clipboard.writeText(otp).then(() => {
+              const btn = event.target;
+              btn.textContent = '✅ Copied!';
+              setTimeout(() => {
+                btn.textContent = 'Copy OTP';
+              }, 2000);
+            });
+          }
+        </script>
+      </body>
+      </html>
+    `;
+
+    res.send(html);
   } catch (error) {
     console.error('Verify admin error', error);
-    res.status(500).json({ message: 'Server error' });
+    res.status(500).send(`
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <title>Error</title>
+        <style>body { font-family: Arial; text-align: center; padding: 50px; }</style>
+      </head>
+      <body>
+        <h1>❌ Error</h1>
+        <p>An error occurred during verification.</p>
+      </body>
+      </html>
+    `);
   }
 };
 
