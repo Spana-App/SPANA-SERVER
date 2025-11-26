@@ -74,17 +74,55 @@ function getTransporter() {
       maxConnections: maxConnections,
       maxMessages: maxMessages,
       requireTLS: true,
-      connectionTimeout: parseInt(process.env.SMTP_CONNECTION_TIMEOUT || '10000', 10),
+      connectionTimeout: parseInt(process.env.SMTP_CONNECTION_TIMEOUT || '30000', 10), // 30s timeout
+      socketTimeout: parseInt(process.env.SMTP_SOCKET_TIMEOUT || '30000', 10), // 30s socket timeout
+      greetingTimeout: parseInt(process.env.SMTP_GREETING_TIMEOUT || '5000', 10), // 5s greeting timeout
       tls: {
         // Use modern TLS; Office365 supports TLS 1.2
         ciphers: process.env.SMTP_TLS_CIPHERS || 'TLSv1.2',
         // In dev you can set SMTP_REJECT_UNAUTHORIZED=false to ignore cert errors (not for prod)
         rejectUnauthorized: process.env.SMTP_REJECT_UNAUTHORIZED ? process.env.SMTP_REJECT_UNAUTHORIZED === 'true' : false
-      }
+      },
+      debug: process.env.SMTP_DEBUG === 'true',
+      logger: process.env.SMTP_DEBUG === 'true'
     });
   }
 
   return cachedTransporter;
+}
+
+// Retry email sending with exponential backoff
+async function sendMailWithRetry({ to, subject, text, html, from, attachments, maxRetries = 3 }: any): Promise<any> {
+  const retryDelay = (attempt: number) => Math.min(1000 * Math.pow(2, attempt), 10000); // Exponential backoff, max 10s
+  
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await sendMail({ to, subject, text, html, from, attachments });
+    } catch (error: any) {
+      const isLastAttempt = attempt === maxRetries;
+      const isConnectionError = error.code === 'ETIMEDOUT' || error.code === 'ECONNREFUSED' || error.code === 'ECONNRESET';
+      
+      if (isLastAttempt) {
+        console.error(`[SMTP] Failed after ${maxRetries + 1} attempts. Giving up.`);
+        throw error;
+      }
+      
+      if (isConnectionError) {
+        const delay = retryDelay(attempt);
+        console.warn(`[SMTP] Connection error (attempt ${attempt + 1}/${maxRetries + 1}). Retrying in ${delay}ms...`, {
+          code: error.code,
+          message: error.message
+        });
+        await new Promise(resolve => setTimeout(resolve, delay));
+        
+        // Clear cached transporter to force new connection
+        cachedTransporter = null;
+      } else {
+        // For non-connection errors (auth, etc.), don't retry
+        throw error;
+      }
+    }
+  }
 }
 
 async function sendMail({ to, subject, text, html, from, attachments }: any) {
@@ -109,6 +147,22 @@ async function sendMail({ to, subject, text, html, from, attachments }: any) {
     if (attachments) mailOptions.attachments = attachments;
     
     console.log(`[SMTP] Attempting to send email to ${to} via ${process.env.SMTP_HOST}:${process.env.SMTP_PORT}`);
+    
+    // Verify connection before sending
+    try {
+      await transporter.verify();
+      console.log(`[SMTP] Connection verified successfully`);
+    } catch (verifyError: any) {
+      console.warn(`[SMTP] Connection verification failed, but attempting to send anyway:`, verifyError.message);
+      // Clear cached transporter to force reconnect
+      cachedTransporter = null;
+      // Try again with fresh connection
+      const freshTransporter = getTransporter();
+      const result = await freshTransporter.sendMail(mailOptions);
+      console.log(`[SMTP] Email sent successfully to ${to}. MessageId: ${result.messageId}`);
+      return result;
+    }
+    
     const result = await transporter.sendMail(mailOptions);
     console.log(`[SMTP] Email sent successfully to ${to}. MessageId: ${result.messageId}`);
     return result;
@@ -122,6 +176,8 @@ async function sendMail({ to, subject, text, html, from, attachments }: any) {
       host: process.env.SMTP_HOST,
       port: process.env.SMTP_PORT
     });
+    // Clear cached transporter on error to force reconnect on retry
+    cachedTransporter = null;
     // Re-throw to allow calling code to handle the error
     throw error;
   }
@@ -151,7 +207,7 @@ function buildWelcomeEmail({ firstName, lastName }: any) {
 
 async function sendWelcomeEmail(user: any) {
   const { subject, text, html } = buildWelcomeEmail({ firstName: user.firstName, lastName: user.lastName });
-  return sendMail({ to: user.email, subject, text, html });
+  return sendMailWithRetry({ to: user.email, subject, text, html });
 }
 
 function buildVerificationEmail({ firstName, lastName, verificationLink }: any) {
@@ -171,13 +227,14 @@ function buildVerificationEmail({ firstName, lastName, verificationLink }: any) 
 
 async function sendVerificationEmail(user: any, verificationLink: string) {
   const { subject, text, html } = buildVerificationEmail({ firstName: user.firstName, lastName: user.lastName, verificationLink });
-  return sendMail({ to: user.email, subject, text, html });
+  return sendMailWithRetry({ to: user.email, subject, text, html });
 }
 
 // New function for email verification (not provider verification)
 async function sendEmailVerification({ to, name, link }: any) {
   const subject = 'Verify Your Email - Spana';
   const text = `Hi ${name},\n\nPlease verify your email by clicking this link: ${link}\n\nThis link expires in 24 hours.\n\nThanks,\nThe Spana Team`;
+  // Extract HTML from the template below and send with retry
   const html = `
     <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background-color: #f9f9f9;">
       <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 30px; text-align: center; border-radius: 10px 10px 0 0;">
@@ -210,7 +267,7 @@ async function sendEmailVerification({ to, name, link }: any) {
       </div>
     </div>
   `;
-  return sendMail({ to, subject, text, html });
+  return sendMailWithRetry({ to, subject, text, html });
 }
 
 function buildReceiptEmail({ toRole, amount, currency, bookingId, transactionId, createdAt }: any) {
@@ -272,7 +329,7 @@ function buildPasswordResetEmail({ name, link }: any) {
 
 async function sendPasswordResetEmail({ to, name, link }: any) {
   const { subject, text, html } = buildPasswordResetEmail({ name, link });
-  return sendMail({ to, subject, text, html });
+  return sendMailWithRetry({ to, subject, text, html });
 }
 
 function buildInvoiceEmail({ name, invoiceNumber, bookingId, serviceTitle, amount, currency, jobSize, basePrice, multiplier, calculatedPrice, tipAmount, date, transactionId }: any) {
@@ -347,7 +404,7 @@ function buildInvoiceEmail({ name, invoiceNumber, bookingId, serviceTitle, amoun
 
 async function sendInvoiceEmail({ to, name, invoiceNumber, bookingId, serviceTitle, amount, currency, jobSize, basePrice, multiplier, calculatedPrice, tipAmount, date, transactionId }: any) {
   const { subject, text, html } = buildInvoiceEmail({ name, invoiceNumber, bookingId, serviceTitle, amount, currency, jobSize, basePrice, multiplier, calculatedPrice, tipAmount, date, transactionId });
-  return sendMail({ to, subject, text, html });
+  return sendMailWithRetry({ to, subject, text, html });
 }
 
 function buildAdminOTPEmail({ name, otp, verificationLink }: any) {
@@ -391,7 +448,7 @@ function buildAdminOTPEmail({ name, otp, verificationLink }: any) {
 
 async function sendAdminOTPEmail({ to, name, otp, verificationLink }: any) {
   const { subject, text, html } = buildAdminOTPEmail({ name, otp, verificationLink });
-  return sendMail({ to, subject, text, html });
+  return sendMailWithRetry({ to, subject, text, html });
 }
 
 module.exports = {
