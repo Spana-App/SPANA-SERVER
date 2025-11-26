@@ -294,32 +294,32 @@ function buildPasswordResetEmail({ name, link }: any) {
   const subject = 'Reset Your Password - Spana';
   const text = `Hi ${name},\n\nYou requested to reset your password. Click this link to reset: ${link}\n\nThis link expires in 1 hour.\n\nIf you didn't request this, please ignore this email.\n\nThanks,\nThe Spana Team`;
   const html = `
-    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background-color: #f9f9f9;">
-      <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 30px; text-align: center; border-radius: 10px 10px 0 0;">
-        <h1 style="color: white; margin: 0; font-size: 28px;">Reset Your Password 🔐</h1>
+    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background-color: #ffffff;">
+      <div style="background: #000000; padding: 30px; text-align: center; border-radius: 10px 10px 0 0;">
+        <h1 style="color: #ffffff; margin: 0; font-size: 28px;">Reset Your Password</h1>
       </div>
-      <div style="background: white; padding: 30px; border-radius: 0 0 10px 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
-        <h2 style="color: #333; margin-top: 0;">Hello ${name}!</h2>
-        <p style="color: #666; line-height: 1.6; font-size: 16px;">
+      <div style="background: #ffffff; padding: 30px; border: 1px solid #e0e0e0; border-radius: 0 0 10px 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
+        <h2 style="color: #000000; margin-top: 0;">Hello ${name}!</h2>
+        <p style="color: #333333; line-height: 1.6; font-size: 16px;">
           You requested to reset your password. Click the button below to create a new password.
         </p>
-        <p style="color: #666; line-height: 1.6; font-size: 16px;">
+        <p style="color: #333333; line-height: 1.6; font-size: 16px;">
           This link will expire in 1 hour for your security.
         </p>
         <div style="text-align: center; margin: 30px 0;">
-          <a href="${link}" style="background: linear-gradient(135deg, #dc3545 0%, #c82333 100%); color: white; padding: 15px 30px; text-decoration: none; border-radius: 25px; font-weight: bold; display: inline-block; font-size: 16px;">
-            🔑 Reset Password
+          <a href="${link}" style="background: #000000; color: #ffffff; padding: 15px 30px; text-decoration: none; border-radius: 4px; font-weight: bold; display: inline-block; font-size: 16px;">
+            Reset Password
           </a>
         </div>
-        <p style="color: #999; font-size: 14px; text-align: center; margin-top: 30px;">
+        <p style="color: #666666; font-size: 14px; text-align: center; margin-top: 30px;">
           If the button doesn't work, copy and paste this link into your browser:<br>
-          <a href="${link}" style="color: #667eea; word-break: break-all;">${link}</a>
+          <a href="${link}" style="color: #000000; word-break: break-all; text-decoration: underline;">${link}</a>
         </p>
-        <p style="color: #ff6b6b; font-size: 14px; text-align: center; margin-top: 20px;">
-          ⚠️ If you didn't request this password reset, please ignore this email. Your password will remain unchanged.
+        <p style="color: #333333; font-size: 14px; text-align: center; margin-top: 20px;">
+          If you didn't request this password reset, please ignore this email. Your password will remain unchanged.
         </p>
       </div>
-      <div style="text-align: center; margin-top: 20px; color: #999; font-size: 12px;">
+      <div style="text-align: center; margin-top: 20px; color: #999999; font-size: 12px;">
         <p>© ${new Date().getFullYear()} Spana. All rights reserved.</p>
       </div>
     </div>
@@ -336,10 +336,10 @@ function buildInvoiceEmail({ name, invoiceNumber, bookingId, serviceTitle, amoun
   const subject = `Invoice ${invoiceNumber} - Spana Service`;
   const text = `Invoice ${invoiceNumber}\n\nBooking: ${bookingId}\nService: ${serviceTitle}\nAmount: ${amount} ${currency}\nDate: ${date}`;
   const html = `
-    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background-color: #f9f9f9;">
-      <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 30px; text-align: center; border-radius: 10px 10px 0 0;">
-        <h1 style="color: white; margin: 0; font-size: 28px;">Invoice 📄</h1>
-        <p style="color: white; margin: 5px 0 0 0; font-size: 18px;">${invoiceNumber}</p>
+    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background-color: #ffffff;">
+      <div style="background: #000000; padding: 30px; text-align: center; border-radius: 10px 10px 0 0;">
+        <h1 style="color: #ffffff; margin: 0; font-size: 28px;">Invoice</h1>
+        <p style="color: #ffffff; margin: 5px 0 0 0; font-size: 18px;">${invoiceNumber}</p>
       </div>
       <div style="background: white; padding: 30px; border-radius: 0 0 10px 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
         <h2 style="color: #333; margin-top: 0;">Hello ${name}!</h2>
@@ -411,34 +411,34 @@ function buildAdminOTPEmail({ name, otp, verificationLink }: any) {
   const subject = 'Your Spana Admin Login OTP 🎉';
   const text = `Hi ${name},\n\nWelcome to SPANA Admin! Your account has been created.\n\nYour 6-digit OTP for admin login is: ${otp}\n\nThis OTP expires in 5 hours.\n\n${verificationLink ? `Or click this link to verify and see your OTP: ${verificationLink}\n\n` : ''}If you didn't request this, please contact support immediately.\n\nThanks,\nThe Spana Team`;
   const html = `
-    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background-color: #f9f9f9;">
-      <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 30px; text-align: center; border-radius: 10px 10px 0 0;">
-        <h1 style="color: white; margin: 0; font-size: 28px;">🎉 Welcome to SPANA Admin! 🎉</h1>
+    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background-color: #ffffff;">
+      <div style="background: #000000; padding: 30px; text-align: center; border-radius: 10px 10px 0 0;">
+        <h1 style="color: #ffffff; margin: 0; font-size: 28px;">Welcome to SPANA Admin!</h1>
       </div>
-      <div style="background: white; padding: 30px; border-radius: 0 0 10px 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
-        <h2 style="color: #333; margin-top: 0;">Hello ${name}!</h2>
-        <p style="color: #666; line-height: 1.6; font-size: 16px;">
+      <div style="background: #ffffff; padding: 30px; border: 1px solid #e0e0e0; border-radius: 0 0 10px 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
+        <h2 style="color: #000000; margin-top: 0;">Hello ${name}!</h2>
+        <p style="color: #333333; line-height: 1.6; font-size: 16px;">
           Your admin account has been created! Use the OTP below to complete your login.
         </p>
-        <div style="background: #f8f9fa; border: 2px dashed #667eea; padding: 20px; text-align: center; margin: 30px 0; border-radius: 8px;">
-          <p style="color: #999; font-size: 14px; margin: 0 0 10px 0;">Your 6-digit OTP:</p>
-          <p style="color: #667eea; font-size: 36px; font-weight: bold; letter-spacing: 8px; margin: 0; font-family: 'Courier New', monospace;">${otp}</p>
+        <div style="background: #f5f5f5; border: 2px dashed #000000; padding: 20px; text-align: center; margin: 30px 0; border-radius: 8px;">
+          <p style="color: #666666; font-size: 14px; margin: 0 0 10px 0;">Your 6-digit OTP:</p>
+          <p style="color: #000000; font-size: 36px; font-weight: bold; letter-spacing: 8px; margin: 0; font-family: 'Courier New', monospace;">${otp}</p>
         </div>
         ${verificationLink ? `
         <div style="text-align: center; margin: 30px 0;">
-          <a href="${verificationLink}" style="display: inline-block; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 15px 30px; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 16px;">
-            🎊 Click here to verify & see confetti! 🎊
+          <a href="${verificationLink}" style="display: inline-block; background: #000000; color: #ffffff; padding: 15px 30px; text-decoration: none; border-radius: 4px; font-weight: bold; font-size: 16px;">
+            Click here to verify & see your OTP
           </a>
         </div>
         ` : ''}
-        <p style="color: #666; line-height: 1.6; font-size: 16px;">
+        <p style="color: #333333; line-height: 1.6; font-size: 16px;">
           This OTP will expire in <strong>5 hours</strong> for your security.
         </p>
-        <p style="color: #ff6b6b; font-size: 14px; text-align: center; margin-top: 20px;">
-          ⚠️ If you didn't request this OTP, please contact support immediately. Your account may be at risk.
+        <p style="color: #333333; font-size: 14px; text-align: center; margin-top: 20px;">
+          If you didn't request this OTP, please contact support immediately. Your account may be at risk.
         </p>
       </div>
-      <div style="text-align: center; margin-top: 20px; color: #999; font-size: 12px;">
+      <div style="text-align: center; margin-top: 20px; color: #999999; font-size: 12px;">
         <p>© ${new Date().getFullYear()} Spana. All rights reserved.</p>
       </div>
     </div>
