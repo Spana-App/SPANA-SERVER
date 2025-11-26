@@ -429,14 +429,21 @@ exports.login = async (req: any, res: any) => {
 
       // Send verification email with OTP
       try {
+        console.log(`📧 Sending admin OTP email to ${email}...`);
         await sendAdminOTPEmail({
           to: email,
           name: user.firstName || user.email.split('@')[0],
           otp,
           verificationLink
         });
+        console.log(`✅ Admin OTP email sent successfully to ${email}`);
       } catch (emailError) {
-        console.error('Error sending admin OTP email:', emailError);
+        console.error('❌ Error sending admin OTP email:', emailError);
+        console.error('Error details:', {
+          message: emailError?.message,
+          stack: emailError?.stack,
+          code: emailError?.code
+        });
         // Continue even if email fails - OTP is in verification link
       }
 

@@ -949,7 +949,7 @@ exports.verifyOTP = async (req: any, res: any) => {
       });
     } catch (_) {}
 
-    // Shape admin response
+    // Shape admin response (no walletBalance for admins)
     const userResponse = {
       _id: user.id,
       email: user.email,
@@ -962,7 +962,6 @@ exports.verifyOTP = async (req: any, res: any) => {
       isPhoneVerified: user.isPhoneVerified,
       profileImage: user.profileImage,
       location: user.location,
-      walletBalance: user.walletBalance,
       status: user.status,
       createdAt: user.createdAt,
       updatedAt: user.updatedAt,
