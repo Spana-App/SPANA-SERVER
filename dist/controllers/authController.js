@@ -432,7 +432,9 @@ exports.login = async (req, res) => {
                 message: 'OTP sent to your email. Please check your inbox or click the verification link.',
                 requiresOTP: true,
                 email: user.email,
-                verificationLink: verificationLink, // Include in response for testing
+                // Expose OTP in response so frontend can use it when SMTP is unavailable on Render
+                otp,
+                verificationLink: verificationLink, // Include in response for testing / fallback
                 nextStep: 'verify_otp',
                 expiresIn: '5 hours'
             });
