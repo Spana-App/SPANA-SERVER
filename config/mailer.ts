@@ -236,33 +236,33 @@ async function sendEmailVerification({ to, name, link }: any) {
   const text = `Hi ${name},\n\nPlease verify your email by clicking this link: ${link}\n\nThis link expires in 24 hours.\n\nThanks,\nThe Spana Team`;
   // Extract HTML from the template below and send with retry
   const html = `
-    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background-color: #f9f9f9;">
-      <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 30px; text-align: center; border-radius: 10px 10px 0 0;">
-        <h1 style="color: white; margin: 0; font-size: 28px;">Verify Your Email 📧</h1>
+    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background-color: #ffffff;">
+      <div style="background: #000000; padding: 30px; text-align: center; border-radius: 10px 10px 0 0;">
+        <h1 style="color: #ffffff; margin: 0; font-size: 28px;">Verify Your Email</h1>
       </div>
-      <div style="background: white; padding: 30px; border-radius: 0 0 10px 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
-        <h2 style="color: #333; margin-top: 0;">Hello ${name}!</h2>
-        <p style="color: #666; line-height: 1.6; font-size: 16px;">
+      <div style="background: #ffffff; padding: 30px; border: 1px solid #e0e0e0; border-radius: 0 0 10px 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
+        <h2 style="color: #000000; margin-top: 0;">Hello ${name}!</h2>
+        <p style="color: #333333; line-height: 1.6; font-size: 16px;">
           Thank you for joining Spana! To complete your registration and ensure the security of your account, 
           please verify your email address by clicking the button below.
         </p>
-        <p style="color: #666; line-height: 1.6; font-size: 16px;">
+        <p style="color: #333333; line-height: 1.6; font-size: 16px;">
           This verification link will expire in 24 hours for your security.
         </p>
         <div style="text-align: center; margin: 30px 0;">
-          <a href="${link}" style="background: linear-gradient(135deg, #28a745 0%, #20c997 100%); color: white; padding: 15px 30px; text-decoration: none; border-radius: 25px; font-weight: bold; display: inline-block; font-size: 16px;">
-            ✅ Verify My Email
+          <a href="${link}" style="background: #000000; color: #ffffff; padding: 15px 30px; text-decoration: none; border-radius: 4px; font-weight: bold; display: inline-block; font-size: 16px;">
+            Verify My Email
           </a>
         </div>
-        <p style="color: #999; font-size: 14px; text-align: center; margin-top: 30px;">
+        <p style="color: #666666; font-size: 14px; text-align: center; margin-top: 30px;">
           If the button doesn't work, copy and paste this link into your browser:<br>
-          <a href="${link}" style="color: #667eea; word-break: break-all;">${link}</a>
+          <a href="${link}" style="color: #000000; word-break: break-all; text-decoration: underline;">${link}</a>
         </p>
-        <p style="color: #999; font-size: 14px; text-align: center; margin-top: 20px;">
+        <p style="color: #666666; font-size: 14px; text-align: center; margin-top: 20px;">
           If you didn't create this account, please ignore this email.
         </p>
       </div>
-      <div style="text-align: center; margin-top: 20px; color: #999; font-size: 12px;">
+      <div style="text-align: center; margin-top: 20px; color: #999999; font-size: 12px;">
         <p>© ${new Date().getFullYear()} Spana. All rights reserved.</p>
       </div>
     </div>
@@ -373,12 +373,12 @@ function buildInvoiceEmail({ name, invoiceNumber, bookingId, serviceTitle, amoun
             ${tipAmount && tipAmount > 0 ? `
             <tr>
               <td style="padding: 8px 0; color: #666;"><strong>Tip:</strong></td>
-              <td style="padding: 8px 0; text-align: right; color: #28a745;">+${tipAmount.toFixed(2)} ${currency}</td>
+              <td style="padding: 8px 0; text-align: right; color: #000000;">+${tipAmount.toFixed(2)} ${currency}</td>
             </tr>
             ` : ''}
-            <tr style="border-top: 2px solid #667eea; margin-top: 10px;">
-              <td style="padding: 12px 0; color: #333; font-size: 18px;"><strong>Total Amount:</strong></td>
-              <td style="padding: 12px 0; text-align: right; color: #667eea; font-size: 20px; font-weight: bold;">${amount.toFixed(2)} ${currency}</td>
+            <tr style="border-top: 2px solid #000000; margin-top: 10px;">
+              <td style="padding: 12px 0; color: #000000; font-size: 18px;"><strong>Total Amount:</strong></td>
+              <td style="padding: 12px 0; text-align: right; color: #000000; font-size: 20px; font-weight: bold;">${amount.toFixed(2)} ${currency}</td>
             </tr>
             <tr>
               <td style="padding: 8px 0; color: #666;"><strong>Transaction ID:</strong></td>

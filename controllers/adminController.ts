@@ -179,7 +179,7 @@ exports.verifyAdmin = async (req: any, res: any) => {
           * { margin: 0; padding: 0; box-sizing: border-box; }
           body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: #ffffff;
             min-height: 100vh;
             display: flex;
             align-items: center;
@@ -200,7 +200,7 @@ exports.verifyAdmin = async (req: any, res: any) => {
           h1 {
             font-size: 48px;
             margin-bottom: 20px;
-            color: #667eea;
+            color: #000000;
           }
           .welcome-text {
             font-size: 24px;
@@ -208,8 +208,8 @@ exports.verifyAdmin = async (req: any, res: any) => {
             margin-bottom: 30px;
           }
           .otp-container {
-            background: #f7f7f7;
-            border: 2px dashed #667eea;
+            background: #f5f5f5;
+            border: 2px dashed #000000;
             border-radius: 12px;
             padding: 30px;
             margin: 30px 0;
@@ -224,7 +224,7 @@ exports.verifyAdmin = async (req: any, res: any) => {
           .otp-code {
             font-size: 48px;
             font-weight: bold;
-            color: #667eea;
+            color: #000000;
             letter-spacing: 8px;
             font-family: 'Courier New', monospace;
             margin: 10px 0;
@@ -233,18 +233,18 @@ exports.verifyAdmin = async (req: any, res: any) => {
             border-radius: 8px;
           }
           .copy-btn {
-            background: #667eea;
-            color: white;
+            background: #000000;
+            color: #ffffff;
             border: none;
             padding: 12px 24px;
-            border-radius: 8px;
+            border-radius: 4px;
             font-size: 16px;
             cursor: pointer;
             margin-top: 10px;
             transition: all 0.3s;
           }
           .copy-btn:hover {
-            background: #5568d3;
+            background: #333333;
             transform: translateY(-2px);
           }
           .copy-btn:active {
@@ -260,7 +260,7 @@ exports.verifyAdmin = async (req: any, res: any) => {
             position: fixed;
             width: 10px;
             height: 10px;
-            background: #667eea;
+            background: #000000;
             position: absolute;
             animation: confetti-fall 3s linear infinite;
           }
@@ -309,8 +309,8 @@ exports.verifyAdmin = async (req: any, res: any) => {
         </div>
         
         <script>
-          // Confetti animation
-          const colors = ['#667eea', '#764ba2', '#f093fb', '#4facfe', '#00f2fe'];
+          // Confetti animation - black and white only
+          const colors = ['#000000', '#333333', '#666666', '#999999', '#ffffff'];
           for (let i = 0; i < 50; i++) {
             setTimeout(() => {
               const confetti = document.createElement('div');
