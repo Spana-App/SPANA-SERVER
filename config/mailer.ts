@@ -263,7 +263,7 @@ async function sendEmailVerification({ to, name, link }: any) {
         </p>
       </div>
       <div style="text-align: center; margin-top: 20px; color: #999; font-size: 12px;">
-        <p>© 2024 Spana. All rights reserved.</p>
+        <p>© ${new Date().getFullYear()} Spana. All rights reserved.</p>
       </div>
     </div>
   `;
@@ -320,7 +320,7 @@ function buildPasswordResetEmail({ name, link }: any) {
         </p>
       </div>
       <div style="text-align: center; margin-top: 20px; color: #999; font-size: 12px;">
-        <p>© 2024 Spana. All rights reserved.</p>
+        <p>© ${new Date().getFullYear()} Spana. All rights reserved.</p>
       </div>
     </div>
   `;
@@ -395,7 +395,7 @@ function buildInvoiceEmail({ name, invoiceNumber, bookingId, serviceTitle, amoun
         </p>
       </div>
       <div style="text-align: center; margin-top: 20px; color: #999; font-size: 12px;">
-        <p>© 2024 Spana. All rights reserved.</p>
+        <p>© ${new Date().getFullYear()} Spana. All rights reserved.</p>
       </div>
     </div>
   `;
@@ -439,7 +439,7 @@ function buildAdminOTPEmail({ name, otp, verificationLink }: any) {
         </p>
       </div>
       <div style="text-align: center; margin-top: 20px; color: #999; font-size: 12px;">
-        <p>© 2024 Spana. All rights reserved.</p>
+        <p>© ${new Date().getFullYear()} Spana. All rights reserved.</p>
       </div>
     </div>
   `;
