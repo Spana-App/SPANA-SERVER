@@ -92,18 +92,27 @@ function getTransporter() {
 }
 
 // Retry email sending with exponential backoff
-async function sendMailWithRetry({ to, subject, text, html, from, attachments, maxRetries = 3 }: any): Promise<any> {
-  const retryDelay = (attempt: number) => Math.min(1000 * Math.pow(2, attempt), 10000); // Exponential backoff, max 10s
+async function sendMailWithRetry({ to, subject, text, html, from, attachments, maxRetries = 5 }: any): Promise<any> {
+  const retryDelay = (attempt: number) => Math.min(2000 * Math.pow(2, attempt), 15000); // Exponential backoff, max 15s
   
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
       return await sendMail({ to, subject, text, html, from, attachments });
     } catch (error: any) {
       const isLastAttempt = attempt === maxRetries;
-      const isConnectionError = error.code === 'ETIMEDOUT' || error.code === 'ECONNREFUSED' || error.code === 'ECONNRESET';
+      const isConnectionError = error.code === 'ETIMEDOUT' || 
+                                error.code === 'ECONNREFUSED' || 
+                                error.code === 'ECONNRESET' ||
+                                error.code === 'ENOTFOUND' ||
+                                error.message?.includes('timeout') ||
+                                error.message?.includes('Connection');
       
       if (isLastAttempt) {
-        console.error(`[SMTP] Failed after ${maxRetries + 1} attempts. Giving up.`);
+        console.error(`[SMTP] Failed after ${maxRetries + 1} attempts. Last error:`, {
+          code: error.code,
+          message: error.message,
+          command: error.command
+        });
         throw error;
       }
       
@@ -119,6 +128,7 @@ async function sendMailWithRetry({ to, subject, text, html, from, attachments, m
         cachedTransporter = null;
       } else {
         // For non-connection errors (auth, etc.), don't retry
+        console.error(`[SMTP] Non-connection error, not retrying:`, error.message);
         throw error;
       }
     }
@@ -148,21 +158,7 @@ async function sendMail({ to, subject, text, html, from, attachments }: any) {
     
     console.log(`[SMTP] Attempting to send email to ${to} via ${process.env.SMTP_HOST}:${process.env.SMTP_PORT}`);
     
-    // Verify connection before sending
-    try {
-      await transporter.verify();
-      console.log(`[SMTP] Connection verified successfully`);
-    } catch (verifyError: any) {
-      console.warn(`[SMTP] Connection verification failed, but attempting to send anyway:`, verifyError.message);
-      // Clear cached transporter to force reconnect
-      cachedTransporter = null;
-      // Try again with fresh connection
-      const freshTransporter = getTransporter();
-      const result = await freshTransporter.sendMail(mailOptions);
-      console.log(`[SMTP] Email sent successfully to ${to}. MessageId: ${result.messageId}`);
-      return result;
-    }
-    
+    // Skip verification for faster sending - retry logic will handle connection issues
     const result = await transporter.sendMail(mailOptions);
     console.log(`[SMTP] Email sent successfully to ${to}. MessageId: ${result.messageId}`);
     return result;
