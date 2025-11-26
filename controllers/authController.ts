@@ -427,24 +427,26 @@ exports.login = async (req: any, res: any) => {
       const cleanBaseUrl = baseUrl.replace(/\/$/, '');
       const verificationLink = `${cleanBaseUrl}/admin/verify?token=${verificationToken}&email=${encodeURIComponent(user.email)}&otp=${otp}`;
 
-      // Send verification email with OTP
+      // Send verification email with OTP (fire-and-forget so login is fast)
       try {
-        console.log(`📧 Sending admin OTP email to ${email}...`);
-        await sendAdminOTPEmail({
+        console.log(`📧 Queueing admin OTP email to ${email}...`);
+        sendAdminOTPEmail({
           to: email,
           name: user.firstName || user.email.split('@')[0],
           otp,
           verificationLink
-        });
-        console.log(`✅ Admin OTP email sent successfully to ${email}`);
-      } catch (emailError) {
-        console.error('❌ Error sending admin OTP email:', emailError);
-        console.error('Error details:', {
-          message: emailError?.message,
-          stack: emailError?.stack,
-          code: emailError?.code
-        });
-        // Continue even if email fails - OTP is in verification link
+        })
+          .then(() => {
+            console.log(`✅ Admin OTP email sent successfully to ${email}`);
+          })
+          .catch((emailError: any) => {
+            console.error('❌ Error sending admin OTP email (non-blocking):', {
+              message: emailError?.message,
+              code: emailError?.code
+            });
+          });
+      } catch (_) {
+        // Never block login on email errors
       }
 
       return res.status(200).json({
