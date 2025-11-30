@@ -100,16 +100,52 @@ exports.createPaymentIntent = async (req, res) => {
         }
       });
 
+      // Generate customer chat token when payment is confirmed
+      const { generateChatToken } = require('../lib/chatTokens');
+      const customerChatToken = generateChatToken(bookingId, req.user.id, 'customer');
+      
       // Update booking
-      await prisma.booking.update({
+      const updatedBooking = await prisma.booking.update({
         where: { id: bookingId },
         data: {
           paymentStatus: 'paid_to_escrow',
           status: 'confirmed',
           invoiceNumber: invoiceNumber,
-          invoiceSentAt: new Date()
+          invoiceSentAt: new Date(),
+          customerChatToken, // Generate token when payment confirmed
+          chatActive: false // Will be true when provider also accepts
+        },
+        include: {
+          customer: { include: { user: true } },
+          service: { include: { provider: { include: { user: true } } } }
         }
       });
+      
+      // If provider already accepted, activate chat
+      if (updatedBooking.providerChatToken) {
+        await prisma.booking.update({
+          where: { id: bookingId },
+          data: { chatActive: true }
+        });
+        
+        // Notify both parties that chat is ready
+        try {
+          const app = require('../server');
+          const io = app.get && app.get('io');
+          if (io) {
+            io.to(updatedBooking.customer.user.id).emit('chat-token-received', {
+              bookingId,
+              chatToken: customerChatToken,
+              chatActive: true
+            });
+            io.to(updatedBooking.service.provider.user.id).emit('chat-activated', {
+              bookingId,
+              chatActive: true
+            });
+            io.to(`booking:${bookingId}`).emit('chatroom-ready', { bookingId, chatActive: true });
+          }
+        } catch (_) {}
+      }
 
       // Update Spana wallet
       let wallet = await prisma.spanaWallet.findFirst();
@@ -289,16 +325,58 @@ exports.payfastWebhook = async (req, res) => {
         }
       });
 
-      // Update booking with invoice number
-      await prisma.booking.update({
+      // Generate customer chat token when payment is confirmed
+      const { generateChatToken } = require('../lib/chatTokens');
+      const customer = await prisma.booking.findUnique({
+        where: { id: bookingId },
+        include: { customer: { include: { user: true } } }
+      });
+      const customerChatToken = customer ? generateChatToken(bookingId, customer.customer.userId, 'customer') : null;
+      
+      // Update booking with invoice number and chat token
+      const updatedBooking = await prisma.booking.update({
         where: { id: bookingId },
         data: {
           paymentStatus: 'paid_to_escrow',
           status: 'confirmed',
           invoiceNumber: invoiceNumber,
-          invoiceSentAt: new Date()
+          invoiceSentAt: new Date(),
+          customerChatToken, // Generate token when payment confirmed
+          chatActive: false // Will be true when provider also accepts
+        },
+        include: {
+          customer: { include: { user: true } },
+          service: { include: { provider: { include: { user: true } } } }
         }
       });
+      
+      // If provider already accepted, activate chat
+      if (updatedBooking.providerChatToken && customerChatToken) {
+        await prisma.booking.update({
+          where: { id: bookingId },
+          data: { chatActive: true }
+        });
+        
+        // Notify both parties that chat is ready
+        try {
+          const app = require('../server');
+          const io = app.get && app.get('io');
+          if (io) {
+            io.to(updatedBooking.customer.user.id).emit('chat-token-received', {
+              bookingId,
+              chatToken: customerChatToken,
+              chatActive: true
+            });
+            if (updatedBooking.service.provider) {
+              io.to(updatedBooking.service.provider.user.id).emit('chat-activated', {
+                bookingId,
+                chatActive: true
+              });
+            }
+            io.to(`booking:${bookingId}`).emit('chatroom-ready', { bookingId, chatActive: true });
+          }
+        } catch (_) {}
+      }
 
       // Update workflow: Payment Received
       try {
@@ -800,8 +878,13 @@ exports.confirmPayment = async (req, res) => {
 // Get payment history for user
 exports.getPaymentHistory = async (req, res) => {
   try {
+    // Admins can see all payments, customers see only their own
+    const where: any = req.user.role === 'admin' 
+      ? {} // Admin sees all payments
+      : { customerId: req.user.id }; // Customer sees only their payments
+    
     const payments = await prisma.payment.findMany({
-      where: { customerId: req.user.id },
+      where,
       include: {
         booking: {
           include: {

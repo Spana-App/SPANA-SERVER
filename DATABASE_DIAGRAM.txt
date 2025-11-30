@@ -1,0 +1,296 @@
+═══════════════════════════════════════════════════════════════════════════════
+                    SPANA DATABASE RELATIONSHIP DIAGRAM
+═══════════════════════════════════════════════════════════════════════════════
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              USER (Base Entity)                             │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │ id, email, password, firstName, lastName, phone, role              │   │
+│  │ profileImage, location (JSON), walletBalance, status                 │   │
+│  │ isEmailVerified, isPhoneVerified, lastLoginAt                       │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                    │
+                    ┌───────────────┴───────────────┐
+                    │                               │
+        ┌───────────▼──────────┐        ┌──────────▼──────────────┐
+        │      CUSTOMER        │        │   SERVICE_PROVIDER      │
+        │  ┌────────────────┐ │        │  ┌──────────────────┐  │
+        │  │ userId (FK)     │ │        │  │ userId (FK)      │  │
+        │  │ favouriteProviders│ │        │  │ skills[]         │  │
+        │  │ totalBookings   │ │        │  │ experienceYears   │  │
+        │  │ ratingGivenAvg  │ │        │  │ rating            │  │
+        │  └────────────────┘ │        │  │ isVerified        │  │
+        └──────────────────────┘        │  │ availability (JSON)│  │
+                    │                    │  │ serviceArea       │  │
+                    │                    │  └──────────────────┘  │
+                    │                    └────────────────────────┘
+                    │                               │
+                    │                               │
+        ┌───────────▼──────────┐        ┌──────────▼──────────────┐
+        │      BOOKING          │        │      SERVICE           │
+        │  ┌────────────────┐  │        │  ┌──────────────────┐  │
+        │  │ customerId (FK)│  │        │  │ providerId (FK)  │  │
+        │  │ serviceId (FK) │  │        │  │ title             │  │
+        │  │ date, time     │  │        │  │ description       │  │
+        │  │ location (JSON)│  │        │  │ category          │  │
+        │  │ status         │  │        │  │ price             │  │
+        │  │ calculatedPrice│  │        │  │ duration          │  │
+        │  │ paymentStatus  │  │        │  │ adminApproved     │  │
+        │  │ requestStatus  │  │        │  │ status            │  │
+        │  └────────────────┘  │        │  └──────────────────┘  │
+        └───────────────────────┘        └────────────────────────┘
+                    │                               │
+                    │                               │
+        ┌───────────▼──────────┐        ┌──────────▼──────────────┐
+        │      PAYMENT         │        │  SERVICE_WORKFLOW       │
+        │  ┌────────────────┐ │        │  ┌──────────────────┐  │
+        │  │ customerId (FK) │ │        │  │ serviceId (FK)    │  │
+        │  │ bookingId (FK)  │ │        │  │ name              │  │
+        │  │ amount          │ │        │  │ steps (JSON)      │  │
+        │  │ escrowStatus    │ │        │  └──────────────────┘  │
+        │  │ commissionAmount│ │        └────────────────────────┘
+        │  │ providerPayout │ │
+        │  └────────────────┘ │
+        └─────────────────────┘
+                    │
+                    │
+        ┌───────────▼──────────┐
+        │   SPANA_WALLET       │
+        │  ┌────────────────┐ │
+        │  │ totalHeld      │ │
+        │  │ totalReleased  │ │
+        │  │ totalCommission│ │
+        │  └────────────────┘ │
+        └─────────────────────┘
+                    │
+        ┌───────────▼──────────┐
+        │ WALLET_TRANSACTION   │
+        │  ┌────────────────┐ │
+        │  │ walletId (FK) │ │
+        │  │ type           │ │
+        │  │ amount         │ │
+        │  │ bookingId      │ │
+        │  └────────────────┘ │
+        └─────────────────────┘
+
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         SUPPORTING TABLES                                   │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌──────────────┐    ┌──────────────┐    ┌──────────────┐    ┌──────────────┐
+│  DOCUMENT   │    │ NOTIFICATION │    │  ACTIVITY    │    │  COMPLAINT   │
+│  ┌────────┐ │    │  ┌────────┐  │    │  ┌────────┐  │    │  ┌────────┐  │
+│  │provider│ │    │  │ userId │  │    │  │ userId │  │    │  │booking │  │
+│  │Id (FK) │ │    │  │ (FK)   │  │    │  │ (FK)   │  │    │  │Id (FK) │  │
+│  │type    │ │    │  │message │  │    │  │action  │  │    │  │service │  │
+│  │url     │ │    │  │type    │  │    │  │Type    │  │    │  │Id (FK) │  │
+│  │verified│ │    │  │status  │  │    │  │details │  │    │  │type    │  │
+│  └────────┘ │    │  └────────┘  │    │  └────────┘  │    │  │severity│  │
+└──────────────┘    └──────────────┘    └──────────────┘    │  └────────┘  │
+                                                            └──────────────┘
+
+┌──────────────────────┐    ┌──────────────────────┐    ┌──────────────────┐
+│ ADMIN_VERIFICATION   │    │    ADMIN_OTP         │    │ PROVIDER_PAYOUT  │
+│  ┌────────────────┐  │    │  ┌────────────────┐ │    │  ┌────────────┐  │
+│  │ adminEmail     │  │    │  │ adminEmail     │ │    │  │ providerId │  │
+│  │ verified       │  │    │  │ otp            │ │    │  │ (FK)       │  │
+│  │ verifiedAt     │  │    │  │ expiresAt      │ │    │  │ totalEarn  │  │
+│  └────────────────┘  │    │  │ used           │ │    │  │ commission │  │
+└──────────────────────┘    │  └────────────────┘ │    │  │ netAmount  │  │
+                            └──────────────────────┘    │  └────────────┘  │
+                                                        └──────────────────┘
+
+┌──────────────────────────┐    ┌──────────────────────────┐
+│ SERVICE_PROVIDER_APP      │    │ DOCUMENT_VERIFICATION     │
+│  ┌──────────────────────┐ │    │  ┌────────────────────┐ │
+│  │ email                │ │    │  │ documentId (FK)     │ │
+│  │ firstName, lastName  │ │    │  │ provider           │ │
+│  │ status               │ │    │  │ status             │ │
+│  │ skills[]             │ │    │  │ verificationData   │ │
+│  │ invitationToken      │ │    │  │ adminVerified      │ │
+│  └──────────────────────┘ │    │  └────────────────────┘ │
+└──────────────────────────┘    └──────────────────────────┘
+
+
+═══════════════════════════════════════════════════════════════════════════════
+                          KEY RELATIONSHIPS
+═══════════════════════════════════════════════════════════════════════════════
+
+USER (1) ──────< (1) CUSTOMER
+USER (1) ──────< (1) SERVICE_PROVIDER
+
+CUSTOMER (1) ──────< (*) BOOKING
+SERVICE_PROVIDER (1) ──────< (*) SERVICE
+SERVICE_PROVIDER (1) ──────< (*) DOCUMENT
+SERVICE_PROVIDER (1) ──────< (*) PROVIDER_PAYOUT
+
+SERVICE (1) ──────< (*) BOOKING
+SERVICE (1) ──────< (*) SERVICE_WORKFLOW
+SERVICE (1) ──────< (*) COMPLAINT
+
+BOOKING (1) ──────< (1) PAYMENT
+BOOKING (1) ──────< (*) COMPLAINT
+
+CUSTOMER (1) ──────< (*) PAYMENT
+
+USER (1) ──────< (*) NOTIFICATION
+USER (1) ──────< (*) ACTIVITY
+
+SPANA_WALLET (1) ──────< (*) WALLET_TRANSACTION
+
+DOCUMENT (1) ──────< (1) DOCUMENT_VERIFICATION
+
+
+═══════════════════════════════════════════════════════════════════════════════
+                    SERVICE CREATION FLOW (Step by Step)
+═══════════════════════════════════════════════════════════════════════════════
+
+1. PROVIDER REGISTRATION
+   ┌─────────────┐
+   │ User creates│
+   │ account with│
+   │ role:       │
+   │ 'service_  │
+   │ provider'   │
+   └──────┬──────┘
+          │
+          ▼
+   ┌─────────────┐
+   │ User record │
+   │ created     │
+   └──────┬──────┘
+          │
+          ▼
+   ┌─────────────┐
+   │ServiceProvider│
+   │ record created│
+   │ (userId links│
+   │  to User)   │
+   └─────────────┘
+
+
+2. PROVIDER CREATES SERVICE
+   ┌─────────────┐
+   │ POST /services│
+   │ (with JWT)  │
+   └──────┬──────┘
+          │
+          ▼
+   ┌─────────────┐
+   │ Backend finds│
+   │ ServiceProvider│
+   │ by userId    │
+   └──────┬──────┘
+          │
+          ▼
+   ┌─────────────┐
+   │ Service     │
+   │ created with│
+   │ providerId =│
+   │ ServiceProvider.id│
+   │ adminApproved│
+   │ = false     │
+   └─────────────┘
+
+
+3. ADMIN APPROVES SERVICE
+   ┌─────────────┐
+   │ Admin reviews│
+   │ service      │
+   └──────┬──────┘
+          │
+          ▼
+   ┌─────────────┐
+   │ POST /admin/│
+   │ services/:id│
+   │ /approve    │
+   └──────┬──────┘
+          │
+          ▼
+   ┌─────────────┐
+   │ Service     │
+   │ updated:    │
+   │ adminApproved│
+   │ = true      │
+   │ approvedBy =│
+   │ admin ID    │
+   └─────────────┘
+
+
+4. CUSTOMER SEES SERVICE
+   ┌─────────────┐
+   │ GET /services│
+   └──────┬──────┘
+          │
+          ▼
+   ┌─────────────┐
+   │ Backend     │
+   │ filters:    │
+   │ adminApproved│
+   │ = true      │
+   │ status =    │
+   │ 'active'    │
+   └──────┬──────┘
+          │
+          ▼
+   ┌─────────────┐
+   │ Service     │
+   │ returned to│
+   │ customer    │
+   │ (provider   │
+   │ info hidden)│
+   └─────────────┘
+
+
+═══════════════════════════════════════════════════════════════════════════════
+                    BOOKING FLOW (Complete Lifecycle)
+═══════════════════════════════════════════════════════════════════════════════
+
+CUSTOMER                    SERVICE                    PROVIDER
+    │                          │                          │
+    │─── 1. Browse Services ───>│                          │
+    │<── Return Services ──────│                          │
+    │                          │                          │
+    │─── 2. Create Booking ────>│                          │
+    │    (serviceId)           │                          │
+    │                          │                          │
+    │                          │─── 3. Payment ──────────>│
+    │                          │    (Escrow)              │
+    │                          │                          │
+    │                          │<── 4. Accept/Decline ────│
+    │                          │                          │
+    │<── 5. Booking Confirmed ──│                          │
+    │                          │                          │
+    │                          │<── 6. Start Job ─────────│
+    │                          │                          │
+    │                          │<── 7. Complete Job ──────│
+    │                          │                          │
+    │                          │─── 8. Release Payment ───>│
+    │                          │    (minus commission)    │
+    │                          │                          │
+    │<── 9. Rate Provider ──────│                          │
+    │                          │                          │
+
+
+═══════════════════════════════════════════════════════════════════════════════
+                          DATA FLOW SUMMARY
+═══════════════════════════════════════════════════════════════════════════════
+
+USER → CUSTOMER/SERVICE_PROVIDER → SERVICES → BOOKINGS → PAYMENTS
+
+Each step creates records in the database with foreign key relationships:
+
+1. User registers → User record created
+2. Role-specific record created (Customer or ServiceProvider)
+3. Provider creates Service → Service linked to ServiceProvider
+4. Admin approves Service → Service.adminApproved = true
+5. Customer creates Booking → Booking linked to Customer and Service
+6. Customer pays → Payment created, linked to Booking and Customer
+7. Payment held in escrow → SpanaWallet.totalHeld increases
+8. Provider completes service → Payment released
+9. Commission deducted → ProviderPayout created
+
+═══════════════════════════════════════════════════════════════════════════════
+

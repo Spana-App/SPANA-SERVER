@@ -134,11 +134,120 @@ Headers
 - Authorization: Bearer <JWT>
 
 Response
-- 200 OK: returns role-shaped user
+- 200 OK: returns role-shaped user (complete profile with role-specific fields)
+  - Customer: includes customerDetails
+  - Service Provider: includes skills, experienceYears, isOnline, rating, availability, serviceArea, etc.
+  - Admin: excludes walletBalance
 - 401: missing/invalid token
 - 404: user not found
 
-4) Verify Provider (Admin)
+4) Update Current User Profile
+- PUT /auth/profile OR PATCH /auth/profile
+- Protected (Authorization header required)
+- Supports partial updates - only send fields you want to update
+
+Headers
+- Authorization: Bearer <JWT>
+
+Request Body (all fields optional, send only what you want to update)
+```json
+{
+  "firstName": "Updated First Name",
+  "lastName": "Updated Last Name",
+  "phone": "+15551234567",
+  "location": { "type": "Point", "coordinates": [-26.2041, 28.0473] },
+  "profileImage": "/uploads/profile-image.jpg",
+  "customerDetails": {
+    "favouriteProviders": ["provider-id-1", "provider-id-2"]
+  },
+  "providerDetails": {
+    "skills": ["Plumbing", "Electrical"],
+    "experienceYears": 5,
+    "isOnline": true,
+    "availability": {
+      "days": ["Monday", "Tuesday", "Wednesday"],
+      "hours": { "start": "08:00", "end": "17:00" }
+    },
+    "serviceArea": {
+      "radiusInKm": 25,
+      "baseLocation": { "type": "Point", "coordinates": [-26.2041, 28.0473] }
+    },
+    "isProfileComplete": true
+  }
+}
+```
+
+Note: For service providers, you can also use direct fields (backward compatible):
+```json
+{
+  "skills": ["Plumbing", "Electrical"],
+  "experienceYears": 5,
+  "isOnline": true,
+  "availability": {...},
+  "serviceArea": {...}
+}
+```
+
+Response
+- 200 OK: returns updated role-shaped user (same format as GET /auth/me)
+- 400: validation errors
+- 401: missing/invalid token
+- 404: user not found
+- 500: server error
+
+5) Upload Profile Image
+- POST /auth/profile/image OR POST /uploads/profile
+- Protected (Authorization header required)
+- Content-Type: multipart/form-data
+
+Headers
+- Authorization: Bearer <JWT>
+
+Request Body (form-data)
+- Key: "image" (for /auth/profile/image) or "avatar" (for /uploads/profile)
+- Value: Image file (max 5MB)
+
+Response
+- 200 OK: 
+```json
+{
+  "message": "Profile image uploaded successfully",
+  "url": "/uploads/profile-1234567890.jpg",
+  "user": { /* full user object */ }
+}
+```
+- 400: no file uploaded or invalid file type
+- 401: missing/invalid token
+- 500: server error
+
+6) Get User by ID
+- GET /users/:id
+- Protected (Authorization header required)
+
+Headers
+- Authorization: Bearer <JWT>
+
+Response
+- 200 OK: returns user profile (excludes walletBalance for admin users)
+- 401: missing/invalid token
+- 404: user not found
+
+7) Update User by ID
+- PUT /users/:id
+- Protected (Authorization header required)
+- Can only update own profile unless you're an admin
+
+Headers
+- Authorization: Bearer <JWT>
+
+Request Body: Same as PUT /auth/profile (supports all profile fields)
+
+Response
+- 200 OK: returns updated user
+- 403: not authorized (can only update own profile unless admin)
+- 404: user not found
+
+8) Verify Provider (Admin)
 - POST /users/verify
 - Protected (admin/System_admin)
 
@@ -303,8 +412,8 @@ Services (search)
 - Base path: /services
 
 List/search services
-- GET /services?q=<text>&category=<category>
-- Response: array of services; search matches title/description/category
+- GET /services?q=<text>
+- Response: array of services; search matches title/description
 
 Provider profile completeness (gatekeeper)
 - A service provider must have a complete profile before creating/updating/deleting services or starting/completing bookings.
@@ -385,9 +494,6 @@ Base Path: /users
   - Description: List verified providers
   - Responses: 200 array of providers
 
-- GET /providers/:serviceCategory (public)
-  - Description: List verified providers matching a skill/category
-  - Responses: 200 array of providers
 
 - POST /verify (admin)
   - Headers: Authorization: Bearer <ADMIN_JWT>
@@ -420,8 +526,6 @@ Base Path: /services
 - DELETE /:id (auth provider/admin)
   - Responses: 200 { message }
 
-- GET /category/:category
-  - Description: List services by category
 
 Bookings
 

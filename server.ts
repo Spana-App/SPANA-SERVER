@@ -22,6 +22,7 @@ const notificationRoutes = require('./routes/notifications');
 const activityRoutes = require('./routes/activities');
 const uploadRoutes = require('./routes/upload');
 const workflowRoutes = require('./routes/workflows');
+const chatRoutes = require('./routes/chat');
 
 // Initialize Express app
 const app = express();
@@ -99,45 +100,235 @@ const initSocket = (server: any) => {
     console.log(chalk.cyan(`🔌  User connected: ${socket.id} (userId=${socket.userId})`));
     // Join user to their room for private messages
     socket.join(socket.userId);
-    // Join booking room for real-time tracking/chat
-    socket.on('join-booking', ({ bookingId }: any) => {
-      if (bookingId) {
+    // Join booking room for real-time tracking/chat (requires token)
+    socket.on('join-booking', async ({ bookingId, chatToken }: any) => {
+      if (!bookingId) return;
+      
+      try {
+        // Verify chat token
+        const { verifyChatToken, parseChatToken } = require('./lib/chatTokens');
+        const tokenData = parseChatToken(chatToken);
+        
+        if (!tokenData || tokenData.bookingId !== bookingId) {
+          socket.emit('chat-error', { message: 'Invalid chat token' });
+          return;
+        }
+        
+        // Verify booking exists and chat is active
+        const booking = await prisma.booking.findUnique({
+          where: { id: bookingId },
+          include: { 
+            customer: {
+              select: {
+                userId: true
+              }
+            },
+            service: {
+              include: {
+                provider: {
+                  select: {
+                    userId: true
+                  }
+                }
+              }
+            }
+          }
+        });
+        
+        if (!booking) {
+          socket.emit('chat-error', { message: 'Booking not found' });
+          return;
+        }
+        
+        // Check if chat is terminated
+        if (booking.chatTerminatedAt) {
+          socket.emit('chat-error', { message: 'Chat has been terminated (job completed)' });
+          return;
+        }
+        
+        // Verify user matches token role
+        const isCustomer = booking.customer?.userId === socket.userId;
+        const isProvider = booking.service?.provider?.userId === socket.userId;
+        
+        if (tokenData.role === 'customer' && !isCustomer) {
+          socket.emit('chat-error', { message: 'Invalid token for customer' });
+          return;
+        }
+        
+        if (tokenData.role === 'service_provider' && !isProvider) {
+          socket.emit('chat-error', { message: 'Invalid token for provider' });
+          return;
+        }
+        
+        // Verify token
+        if (!verifyChatToken(chatToken, bookingId, socket.userId, tokenData.role)) {
+          socket.emit('chat-error', { message: 'Invalid chat token' });
+          return;
+        }
+        
+        // Join booking room
         socket.join(`booking:${bookingId}`);
+        socket.emit('booking-joined', { bookingId, chatActive: booking.chatActive });
+      } catch (error) {
+        console.error('Join booking error:', error);
+        socket.emit('chat-error', { message: 'Failed to join booking chat' });
       }
     });
 
-    // Chat messages within booking room
+    // Chat messages within booking room (customer-provider, admin can see all)
     socket.on('booking-chat', async ({ bookingId, message }: any) => {
       if (bookingId && message) {
-        // persist chat message asynchronously
         try {
-          await prisma.message.create({
+          // Verify user is involved in booking or is admin
+          const booking = await prisma.booking.findUnique({
+            where: { id: bookingId },
+            include: {
+              customer: { include: { user: true } },
+              service: { include: { provider: { include: { user: true } } } }
+            }
+          });
+
+          if (!booking) {
+            socket.emit('chat-error', { message: 'Booking not found' });
+            return;
+          }
+
+          const isCustomer = booking.customer.userId === socket.userId;
+          const isProvider = booking.service.provider?.userId === socket.userId;
+          const isAdmin = socket.userRole === 'admin';
+
+          if (!isCustomer && !isProvider && !isAdmin) {
+            socket.emit('chat-error', { message: 'Not authorized to chat in this booking' });
+            return;
+          }
+
+          // Persist chat message
+          const savedMessage = await prisma.message.create({
             data: {
               bookingId,
               senderId: socket.userId || '',
               content: message,
-              receiverId: ''
+              receiverId: null, // Booking chat is broadcast to room
+              chatType: 'booking'
             }
           });
-        } catch (_) {}
-        io.to(`booking:${bookingId}`).emit('booking-chat', { from: socket.userId, message, ts: Date.now() });
+
+          // Broadcast to booking room (customer, provider, and admin can all see)
+          io.to(`booking:${bookingId}`).emit('booking-chat', { 
+            id: savedMessage.id,
+            from: socket.userId, 
+            message, 
+            ts: savedMessage.createdAt 
+          });
+
+          // Also notify admin if not already in room
+          if (!isAdmin) {
+            const admins = await prisma.user.findMany({
+              where: { role: 'admin' },
+              select: { id: true }
+            });
+            admins.forEach(admin => {
+              io.to(admin.id).emit('booking-chat', {
+                id: savedMessage.id,
+                from: socket.userId,
+                message,
+                bookingId,
+                ts: savedMessage.createdAt
+              });
+            });
+          }
+        } catch (error) {
+          console.error('Booking chat error:', error);
+          socket.emit('chat-error', { message: 'Failed to send message' });
+        }
       }
     });
 
-    // Generic chat message (user-to-user)
-    socket.on('chat-message', async ({ toUserId, message }: any) => {
+    // Generic chat message (user-to-user) with permission checks
+    socket.on('chat-message', async ({ toUserId, message, chatType }: any) => {
       if (!toUserId || !message) return;
+      
       try {
-        await prisma.message.create({
+        // Get sender and receiver roles for permission check
+        const sender = await prisma.user.findUnique({
+          where: { id: socket.userId },
+          select: { id: true, role: true }
+        });
+        
+        const receiver = await prisma.user.findUnique({
+          where: { id: toUserId },
+          select: { id: true, role: true }
+        });
+
+        if (!sender || !receiver) {
+          socket.emit('chat-error', { message: 'User not found' });
+          return;
+        }
+
+        // Permission checks
+        let allowed = false;
+        let actualChatType = chatType || 'direct';
+
+        // Admin can chat with anyone
+        if (sender.role === 'admin') {
+          allowed = true;
+        }
+        // Provider can chat with admin
+        else if (sender.role === 'service_provider' && receiver.role === 'admin') {
+          allowed = true;
+          actualChatType = 'admin';
+        }
+        // Customer-provider bidirectional chat
+        else if (
+          (sender.role === 'customer' && receiver.role === 'service_provider') ||
+          (sender.role === 'service_provider' && receiver.role === 'customer')
+        ) {
+          allowed = true;
+        }
+        // Customer cannot chat with admin
+        else if (sender.role === 'customer' && receiver.role === 'admin') {
+          socket.emit('chat-error', { 
+            message: 'Customers cannot chat with admin. Please use the complaint system.' 
+          });
+          return;
+        }
+
+        if (!allowed) {
+          socket.emit('chat-error', { message: 'Chat not allowed between these users' });
+          return;
+        }
+
+        // Create and send message
+        const savedMessage = await prisma.message.create({
           data: {
             bookingId: null,
             senderId: socket.userId || '',
             content: message,
-            receiverId: toUserId
+            receiverId: toUserId,
+            chatType: actualChatType
           }
         });
-      } catch (_) {}
-      io.to(toUserId).emit('chat-message', { from: socket.userId, message, ts: Date.now() });
+
+        // Notify receiver
+        io.to(toUserId).emit('chat-message', { 
+          id: savedMessage.id,
+          from: socket.userId, 
+          message, 
+          chatType: actualChatType,
+          ts: savedMessage.createdAt 
+        });
+
+        // Also notify sender (confirmation)
+        socket.emit('chat-sent', { 
+          id: savedMessage.id,
+          to: toUserId,
+          message,
+          ts: savedMessage.createdAt 
+        });
+      } catch (error) {
+        console.error('Chat message error:', error);
+        socket.emit('chat-error', { message: 'Failed to send message' });
+      }
     });
 
     // Live location updates broadcast
@@ -264,8 +455,11 @@ if (require.main === module) {
 
 // Add caching middleware for GET requests using cache abstraction or Redis if enabled
 // Cache middleware - lazy load to avoid memory issues at startup
+// Skip cache for /discover route
 app.use('/services', async (req: any, res: any, next: any) => {
   if (req.method !== 'GET') return next();
+  // Skip cache for discover route
+  if (req.path === '/discover' || req.path.startsWith('/discover')) return next();
   try {
     // Lazy load cache module to avoid memory issues
     const { get: cacheGet, set: cacheSet } = require('./lib/cache');
@@ -309,6 +503,7 @@ app.use('/password-reset', require('./routes/passwordReset'));
 app.use('/privacy', require('./routes/privacy'));
 app.use('/complaints', require('./routes/complaints'));
 app.use('/stats', require('./routes/stats'));
+app.use('/chat', chatRoutes);
 
 // Health check endpoint with Redis status
 app.get('/health', async (req: any, res: any) => {

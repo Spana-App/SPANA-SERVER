@@ -19,9 +19,6 @@ router.delete('/:id', authMiddleware, authorize('admin'), userController.deleteU
 // Get all providers
 router.get('/providers/all', userController.getAllProviders);
 
-// Get providers by service category
-router.get('/providers/:serviceCategory', userController.getProvidersByService);
-
 // Verify provider (admin only)
 router.post('/verify', authMiddleware, authorize('admin', 'System_admin'), userController.verifyProvider);
 

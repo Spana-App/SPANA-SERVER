@@ -112,6 +112,23 @@ exports.verifyAdmin = async (req: any, res: any) => {
   try {
     const { token, email, otp } = req.query;
 
+    // Handle missing email parameter
+    if (!email) {
+      return res.status(400).send(`
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <title>Missing Email</title>
+          <style>body { font-family: Arial; text-align: center; padding: 50px; }</style>
+        </head>
+        <body>
+          <h1>❌ Missing Email Parameter</h1>
+          <p>Please provide an email address in the verification link.</p>
+        </body>
+        </html>
+      `);
+    }
+
     const user = await prisma.user.findFirst({
       where: {
         email: email.toLowerCase(),
@@ -551,26 +568,107 @@ exports.getAllServices = async (req: any, res: any) => {
 
 // Admin CRUD Operations for Services
 
-// Create service (admin creates service and links to provider)
+// Create service (admin can create without providerId, assign later)
 exports.createService = async (req: any, res: any) => {
   try {
-    const { title, description, category, price, duration, providerId, mediaUrl } = req.body;
+    const { title, description, price, mediaUrl, status, providerId } = req.body;
 
-    if (!title || !description || !category || !price || !duration || !providerId) {
-      return res.status(400).json({ message: 'Missing required fields' });
+    // Required fields: title, description, price (providerId and duration are optional)
+    if (!title || !description || !price) {
+      return res.status(400).json({ message: 'Missing required fields: title, description, price' });
+    }
+
+    // If providerId is provided, verify it exists
+    if (providerId) {
+      const provider = await prisma.serviceProvider.findUnique({
+        where: { id: providerId }
+      });
+      if (!provider) {
+        return res.status(404).json({ message: 'Service provider not found' });
+      }
     }
 
     const service = await prisma.service.create({
       data: {
         title,
         description,
-        category,
         price: parseFloat(price),
-        duration: parseInt(duration),
-        providerId,
+        duration: null, // Optional - can be set later
+        providerId: providerId || null, // Optional: can be null
         mediaUrl: mediaUrl || null,
-        status: 'pending_approval',
-        adminApproved: false
+        status: status || 'draft', // Default to 'draft' if no provider
+        adminApproved: providerId ? false : true // Auto-approve if no provider (admin-created service)
+      },
+      include: {
+        provider: providerId ? {
+          include: {
+            user: {
+              select: {
+                firstName: true,
+                lastName: true,
+                email: true
+              }
+            }
+          }
+        } : undefined
+      }
+    });
+
+    res.status(201).json({ 
+      message: providerId 
+        ? 'Service created successfully and linked to provider' 
+        : 'Service created successfully (no provider assigned yet)',
+      service 
+    });
+  } catch (error) {
+    console.error('Create service error', error);
+    res.status(500).json({ message: 'Server error', error: error instanceof Error ? error.message : 'Unknown error' });
+  }
+};
+
+// Assign service to provider (admin only)
+exports.assignServiceToProvider = async (req: any, res: any) => {
+  try {
+    const { id } = req.params;
+    const { providerId } = req.body;
+
+    if (!providerId) {
+      return res.status(400).json({ message: 'providerId is required' });
+    }
+
+    // Verify service exists
+    const service = await prisma.service.findUnique({
+      where: { id }
+    });
+
+    if (!service) {
+      return res.status(404).json({ message: 'Service not found' });
+    }
+
+    // Verify provider exists
+    const provider = await prisma.serviceProvider.findUnique({
+      where: { id: providerId },
+      include: {
+        user: {
+          select: {
+            firstName: true,
+            lastName: true,
+            email: true
+          }
+        }
+      }
+    });
+
+    if (!provider) {
+      return res.status(404).json({ message: 'Service provider not found' });
+    }
+
+    // Update service with provider
+    const updatedService = await prisma.service.update({
+      where: { id },
+      data: {
+        providerId,
+        adminApproved: false // Require re-approval after assignment
       },
       include: {
         provider: {
@@ -587,10 +685,49 @@ exports.createService = async (req: any, res: any) => {
       }
     });
 
-    res.status(201).json({ message: 'Service created successfully', service });
+    res.json({ 
+      message: 'Service assigned to provider successfully',
+      service: updatedService 
+    });
   } catch (error) {
-    console.error('Create service error', error);
-    res.status(500).json({ message: 'Server error' });
+    console.error('Assign service to provider error', error);
+    res.status(500).json({ message: 'Server error', error: error instanceof Error ? error.message : 'Unknown error' });
+  }
+};
+
+// Unassign service from provider (admin only)
+exports.unassignServiceFromProvider = async (req: any, res: any) => {
+  try {
+    const { id } = req.params;
+
+    // Verify service exists
+    const service = await prisma.service.findUnique({
+      where: { id }
+    });
+
+    if (!service) {
+      return res.status(404).json({ message: 'Service not found' });
+    }
+
+    if (!service.providerId) {
+      return res.status(400).json({ message: 'Service is not assigned to any provider' });
+    }
+
+    // Remove provider assignment
+    const updatedService = await prisma.service.update({
+      where: { id },
+      data: {
+        providerId: null
+      }
+    });
+
+    res.json({ 
+      message: 'Service unassigned from provider successfully',
+      service: updatedService 
+    });
+  } catch (error) {
+    console.error('Unassign service from provider error', error);
+    res.status(500).json({ message: 'Server error', error: error instanceof Error ? error.message : 'Unknown error' });
   }
 };
 
@@ -598,14 +735,25 @@ exports.createService = async (req: any, res: any) => {
 exports.updateService = async (req: any, res: any) => {
   try {
     const { id } = req.params;
-    const { title, description, category, price, duration, mediaUrl, status } = req.body;
+    const { title, description, price, duration, mediaUrl, status, providerId } = req.body;
+
+    // If providerId is being updated, verify it exists
+    if (providerId !== undefined) {
+      if (providerId !== null) {
+        const provider = await prisma.serviceProvider.findUnique({
+          where: { id: providerId }
+        });
+        if (!provider) {
+          return res.status(404).json({ message: 'Service provider not found' });
+        }
+      }
+    }
 
     const service = await prisma.service.update({
       where: { id },
       data: {
         ...(title && { title }),
         ...(description && { description }),
-        ...(category && { category }),
         ...(price && { price: parseFloat(price) }),
         ...(duration && { duration: parseInt(duration) }),
         ...(mediaUrl !== undefined && { mediaUrl }),
@@ -750,15 +898,17 @@ exports.getProviderPerformance = async (req: any, res: any) => {
   }
 };
 
-// Get all complaints
+// Get all complaints (admin oversees everything)
 exports.getAllComplaints = async (req: any, res: any) => {
   try {
-    const { status, severity } = req.query;
+    const { status, severity, type, reportedByRole } = req.query;
 
     const complaints = await prisma.complaint.findMany({
       where: {
         ...(status && { status }),
-        ...(severity && { severity })
+        ...(severity && { severity }),
+        ...(type && { type }),
+        ...(reportedByRole && { reportedByRole })
       },
       include: {
         booking: {

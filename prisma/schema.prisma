@@ -127,19 +127,19 @@ model Service {
   id          String   @id @default(cuid())
   title       String
   description String
-  category    String
   price       Float
-  duration    Int      // in minutes
+  duration    Int?     // in minutes (optional)
   mediaUrl    String?
   status      String   @default("draft") // 'draft', 'pending_approval', 'active', 'archived'
   adminApproved Boolean @default(false) // Admin must approve before clients can see
   approvedBy   String?  // Admin user ID who approved
   approvedAt   DateTime?
   rejectionReason String? // If admin rejects
+  isSystemService Boolean @default(false) // True for default system services that come with the platform
   
   // Relations
-  providerId  String
-  provider    ServiceProvider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  providerId  String?  // Optional: Admin can create services without provider, assign later
+  provider    ServiceProvider? @relation(fields: [providerId], references: [id], onDelete: Cascade)
   bookings    Booking[]
   workflows   ServiceWorkflow[]
   complaints  Complaint[]
@@ -200,6 +200,12 @@ model Booking {
   escrowAmount           Float?
   commissionAmount       Float?
   providerPayoutAmount   Float?
+  
+  // NEW: Chat room tokens (generated at specific stages)
+  providerChatToken      String?  // Generated when provider accepts
+  customerChatToken      String?  // Generated when payment is confirmed
+  chatActive             Boolean  @default(false) // True when both tokens exist
+  chatTerminatedAt       DateTime? // When chat is closed (job completed)
   
   // Invoice
   invoiceNumber          String?  // Unique invoice number
@@ -328,13 +334,18 @@ model Message {
   id        String   @id @default(cuid())
   content   String
   senderId  String
-  receiverId String
-  bookingId String?
+  receiverId String? // Null for booking chat or admin chat
+  bookingId String?  // For booking-related chat
+  chatType  String   @default("direct") // 'booking', 'direct', 'admin' (provider-admin only)
   isRead    Boolean  @default(false)
+  metadata  Json?    // For attachments, call info, etc.
   
   createdAt DateTime @default(now())
 
   @@map("messages")
+  @@index([senderId])
+  @@index([receiverId])
+  @@index([bookingId])
 }
 
 model Recommendation {
@@ -407,14 +418,15 @@ model AdminVerification {
 // NEW: Complaint/Issue tracking
 model Complaint {
   id            String   @id @default(cuid())
-  bookingId     String
-  booking       Booking  @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  bookingId     String?  // Optional: can report without booking (general harassment)
+  booking       Booking? @relation(fields: [bookingId], references: [id], onDelete: Cascade)
   serviceId     String?
   service       Service? @relation(fields: [serviceId], references: [id], onDelete: SetNull)
   
   reportedBy   String   // User ID who reported
   reportedByRole String // 'customer' or 'service_provider'
-  type         String   // 'service_quality', 'behavior', 'payment', 'sla_breach', 'other'
+  reportedAgainst String? // User ID being reported (for customer reporting provider harassment)
+  type         String   // 'service_quality', 'behavior', 'harassment', 'payment', 'sla_breach', 'other'
   severity     String   @default("medium") // 'low', 'medium', 'high', 'critical'
   title        String
   description  String

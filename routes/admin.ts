@@ -29,6 +29,8 @@ router.get('/services', auth, authorize('admin'), adminController.getAllServices
 router.post('/services', auth, authorize('admin'), adminController.createService);
 router.put('/services/:id', auth, authorize('admin'), adminController.updateService);
 router.post('/services/:id/approve', auth, authorize('admin'), adminController.approveService);
+router.post('/services/:id/assign', auth, authorize('admin'), adminController.assignServiceToProvider);
+router.post('/services/:id/unassign', auth, authorize('admin'), adminController.unassignServiceFromProvider);
 router.delete('/services/:id', auth, authorize('admin'), adminController.deleteService);
 
 // Provider performance

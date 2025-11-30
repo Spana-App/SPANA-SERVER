@@ -21,6 +21,11 @@ exports.createBooking = async (req: any, res: any) => {
       return res.status(400).json({ message: 'Service is not available for booking' });
     }
 
+    // Check if service has a provider assigned
+    if (!service.providerId || !service.provider) {
+      return res.status(400).json({ message: 'Service does not have a provider assigned yet. Please contact support.' });
+    }
+
     // Job size calculation
     const jobSizeMultipliers: any = {
       small: 1.0,
@@ -92,11 +97,11 @@ exports.createBooking = async (req: any, res: any) => {
       await workflowClient.createWorkflowForBooking(booking.id, defaultSteps).catch(() => {});
     } catch (_) {}
 
-    // Notify provider via socket
+    // Notify provider via socket (only if provider exists)
     try {
       const app = require('../server');
       const io = app.get && app.get('io');
-      if (io && service.provider.user.id) {
+      if (io && service.provider && service.provider.user && service.provider.user.id) {
         io.to(service.provider.user.id).emit('new-booking-request', {
           bookingId: booking.id,
           service: service.title,
@@ -185,13 +190,18 @@ exports.acceptBookingRequest = async (req: any, res: any) => {
       return res.status(400).json({ message: 'Booking request already processed' });
     }
 
-    // Update booking to accepted
+    // Generate provider chat token when provider accepts
+    const { generateChatToken } = require('../lib/chatTokens');
+    const providerChatToken = generateChatToken(bookingId, req.user.id, 'service_provider');
+
+    // Update booking to accepted and generate provider chat token
     const updatedBooking = await prisma.booking.update({
       where: { id: bookingId },
       data: {
         requestStatus: 'accepted',
         providerAcceptedAt: new Date(),
-        status: 'confirmed' // Payment already received, ready to start
+        status: 'confirmed', // Payment already received, ready to start
+        providerChatToken // Generate token when provider accepts
       },
       include: {
         service: {
@@ -214,14 +224,33 @@ exports.acceptBookingRequest = async (req: any, res: any) => {
       const app = require('../server');
       const io = app.get && app.get('io');
       if (io) {
-        // Notify customer
+        // Notify customer with provider chat token (customer will get token after payment)
         io.to(booking.customer.user.id).emit('booking-accepted', {
           bookingId: booking.id,
-          message: 'Provider has accepted your booking request'
+          message: 'Provider has accepted your booking request',
+          providerChatToken: updatedBooking.providerChatToken // Provider token generated
         });
         
-        // Both parties can now join the booking room for chat
-        io.to(`booking:${bookingId}`).emit('chatroom-ready', { bookingId });
+        // Notify provider with their chat token
+        io.to(req.user.id).emit('booking-accepted-provider', {
+          bookingId: booking.id,
+          message: 'You have accepted the booking request',
+          chatToken: updatedBooking.providerChatToken, // Provider gets token when accepting
+          waitingForPayment: !updatedBooking.customerChatToken // Waiting for customer payment
+        });
+        
+        // Activate chat if both tokens exist (payment already done)
+        if (updatedBooking.customerChatToken && updatedBooking.providerChatToken) {
+          await prisma.booking.update({
+            where: { id: bookingId },
+            data: { chatActive: true }
+          });
+          
+          io.to(`booking:${bookingId}`).emit('chatroom-ready', { 
+            bookingId,
+            chatActive: true 
+          });
+        }
       }
     } catch (_) {}
 
@@ -479,7 +508,9 @@ exports.completeBooking = async (req: any, res: any) => {
         completedAt: completedAt,
         actualDurationMinutes: actualDurationMinutes,
         slaBreached: slaBreached,
-        slaPenaltyAmount: slaPenaltyAmount
+        slaPenaltyAmount: slaPenaltyAmount,
+        chatActive: false, // Terminate chat when job is done
+        chatTerminatedAt: new Date() // Mark chat as terminated
       },
       include: {
         service: {

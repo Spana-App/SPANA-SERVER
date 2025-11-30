@@ -54,7 +54,14 @@ exports.getUserById = async (req, res) => {
     if (!user) {
       return res.status(404).json({ message: 'User not found' });
     }
-    res.json(user);
+    
+    // Remove walletBalance for admin users
+    const userResponse = { ...user };
+    if (user.role === 'admin') {
+      delete userResponse.walletBalance;
+    }
+    
+    res.json(userResponse);
   } catch (error) {
     res.status(500).json({ message: 'Server error' });
   }
@@ -113,6 +120,12 @@ exports.updateUser = async (req, res) => {
         updatedAt: true
       }
     });
+    
+    // Remove walletBalance for admin users in response
+    const userResponse = { ...updatedUser };
+    if (updatedUser.role === 'admin') {
+      delete userResponse.walletBalance;
+    }
 
     // Update role-specific data
     if (user.role === 'customer' && body.customerDetails) {
@@ -144,7 +157,7 @@ exports.updateUser = async (req, res) => {
       }
     }
 
-    res.json(updatedUser);
+    res.json(userResponse);
   } catch (error) {
     res.status(500).json({ message: 'Server error' });
   }
@@ -181,72 +194,56 @@ exports.getAllProviders = async (req, res) => {
       },
       include: {
         serviceProvider: true
-      },
-      select: {
-        id: true,
-        email: true,
-        firstName: true,
-        lastName: true,
-        phone: true,
-        role: true,
-        isEmailVerified: true,
-        isPhoneVerified: true,
-        profileImage: true,
-        location: true,
-        walletBalance: true,
-        status: true,
-        lastLoginAt: true,
-        createdAt: true,
-        updatedAt: true
       }
     });
-    res.json(providers);
+    
+    // Shape response (exclude password, exclude walletBalance for admins)
+    const response = providers.map(user => {
+      const userResponse: any = {
+        id: user.id,
+        email: user.email,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        phone: user.phone,
+        role: user.role,
+        isEmailVerified: user.isEmailVerified,
+        isPhoneVerified: user.isPhoneVerified,
+        profileImage: user.profileImage,
+        location: user.location,
+        status: user.status,
+        lastLoginAt: user.lastLoginAt,
+        createdAt: user.createdAt,
+        updatedAt: user.updatedAt
+      };
+      
+      // Only include walletBalance for non-admin users
+      if (user.role !== 'admin') {
+        userResponse.walletBalance = user.walletBalance;
+      }
+      
+      // Include serviceProvider data if it exists
+      if (user.serviceProvider) {
+        userResponse.serviceProvider = {
+          id: user.serviceProvider.id,
+          skills: user.serviceProvider.skills,
+          experienceYears: user.serviceProvider.experienceYears,
+          rating: user.serviceProvider.rating,
+          totalReviews: user.serviceProvider.totalReviews,
+          isVerified: user.serviceProvider.isVerified,
+          isIdentityVerified: user.serviceProvider.isIdentityVerified
+        };
+      }
+      
+      return userResponse;
+    });
+    
+    res.json(response);
   } catch (error) {
-    res.status(500).json({ message: 'Server error' });
+    console.error('Get all providers error:', error);
+    res.status(500).json({ message: 'Server error', error: error instanceof Error ? error.message : 'Unknown error' });
   }
 };
 
-// Get providers by service category
-exports.getProvidersByService = async (req, res) => {
-  try {
-    const { serviceCategory } = req.params;
-    const providers = await prisma.user.findMany({
-      where: {
-        role: 'service_provider',
-        serviceProvider: {
-          isVerified: true,
-          skills: {
-            has: serviceCategory
-          }
-        }
-      },
-      include: {
-        serviceProvider: true
-      },
-      select: {
-        id: true,
-        email: true,
-        firstName: true,
-        lastName: true,
-        phone: true,
-        role: true,
-        isEmailVerified: true,
-        isPhoneVerified: true,
-        profileImage: true,
-        location: true,
-        walletBalance: true,
-        status: true,
-        lastLoginAt: true,
-        createdAt: true,
-        updatedAt: true
-      }
-    });
-
-    res.json(providers);
-  } catch (error) {
-    res.status(500).json({ message: 'Server error' });
-  }
-};
 
 // Admin: verify provider account
 exports.verifyProvider = async (req, res) => {
