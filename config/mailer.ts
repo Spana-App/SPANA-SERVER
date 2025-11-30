@@ -157,21 +157,39 @@ async function sendMail({ to, subject, text, html, from, attachments }: any) {
     if (attachments) mailOptions.attachments = attachments;
     
     console.log(`[SMTP] Attempting to send email to ${to} via ${process.env.SMTP_HOST}:${process.env.SMTP_PORT}`);
+    console.log(`[SMTP] Environment: ${process.env.NODE_ENV || 'development'}`);
+    console.log(`[SMTP] Host: ${process.env.SMTP_HOST}`);
+    console.log(`[SMTP] Port: ${process.env.SMTP_PORT}`);
     
     // Skip verification for faster sending - retry logic will handle connection issues
     const result = await transporter.sendMail(mailOptions);
     console.log(`[SMTP] Email sent successfully to ${to}. MessageId: ${result.messageId}`);
     return result;
   } catch (error: any) {
-    console.error('[SMTP Error] Failed to send email:', {
+    const errorDetails = {
       to,
       subject,
       error: error.message,
       code: error.code,
       command: error.command,
       host: process.env.SMTP_HOST,
-      port: process.env.SMTP_PORT
-    });
+      port: process.env.SMTP_PORT,
+      environment: process.env.NODE_ENV || 'development',
+      stack: error.stack
+    };
+    
+    console.error('[SMTP Error] Failed to send email:', errorDetails);
+    
+    // Check for common Render/cloud platform issues
+    if (error.code === 'ECONNREFUSED' || error.code === 'ETIMEDOUT' || error.code === 'ENOTFOUND') {
+      console.error('[SMTP] ⚠️  Connection issue detected. This is common on cloud platforms like Render.');
+      console.error('[SMTP] 💡 Solutions:');
+      console.error('[SMTP]   1. Use SendGrid API (MAIL_PROVIDER=sendgrid) instead of SMTP');
+      console.error('[SMTP]   2. Use Mailgun, AWS SES, or other API-based email services');
+      console.error('[SMTP]   3. Check if Render allows outbound SMTP connections on port', process.env.SMTP_PORT);
+      console.error('[SMTP]   4. Verify SMTP server allows connections from Render IP ranges');
+    }
+    
     // Clear cached transporter on error to force reconnect on retry
     cachedTransporter = null;
     // Re-throw to allow calling code to handle the error
