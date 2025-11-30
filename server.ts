@@ -704,11 +704,20 @@ if (require.main === module) {
 // Note: Error handling for listen is now in the try-catch above
 
 // Global error observers (to aid diagnostics)
-process.on('unhandledRejection', (reason: any) => {
+// Don't exit on unhandled rejections - log and continue
+process.on('unhandledRejection', (reason: any, promise: Promise<any>) => {
   console.error(chalk.red('🚨 Unhandled Promise Rejection:'), reason);
+  console.error(chalk.red('🚨 Promise:'), promise);
+  // Don't exit - let the server continue running
+  // Render will restart if health checks fail
 });
+
+// Uncaught exceptions are more serious - but we'll log and let Render handle restart
 process.on('uncaughtException', (err: any) => {
   console.error(chalk.red('🚨 Uncaught Exception:'), err);
+  console.error(chalk.red('🚨 Stack:'), err.stack);
+  // Log but don't exit immediately - let graceful shutdown handle it
+  // This prevents immediate crash but allows Render to detect and restart if needed
 });
 
 // Graceful shutdown
