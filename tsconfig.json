@@ -19,7 +19,13 @@
     "**/__tests__/**",
     "**/*.test.ts",
     "**/*.spec.ts",
-    "scripts/testEndToEnd.ts"
+    "scripts/testEndToEnd.ts",
+    "scripts/testAllRoutes.ts",
+    "scripts/testChatSystem.ts",
+    "scripts/testDefaultServices.ts",
+    "scripts/testDiscover.ts",
+    "scripts/testSmtp.ts",
+    "scripts/testAdminLogin.ts"
   ]
 }
 
