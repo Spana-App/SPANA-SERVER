@@ -20,7 +20,17 @@ function getTransporter() {
   if (cachedTransporter) return cachedTransporter;
 
   const host = process.env.SMTP_HOST;
-  const port = parseInt(process.env.SMTP_PORT || '587', 10) || 587;
+  // Try alternative ports for Render compatibility (2525 is often not blocked)
+  // Render free tier blocks 25, 465, 587 - but 2525 may work
+  let port = parseInt(process.env.SMTP_PORT || '587', 10) || 587;
+  
+  // If on Render and using blocked port, try alternative
+  if (process.env.RENDER && (port === 587 || port === 465 || port === 25)) {
+    const altPort = parseInt(process.env.SMTP_ALT_PORT || '2525', 10);
+    console.log(`[SMTP] Render detected - trying alternative port ${altPort} instead of ${port}`);
+    port = altPort;
+  }
+  
   const user = process.env.SMTP_USER;
   const pass = process.env.SMTP_PASS;
   const secure = String(process.env.SMTP_SECURE || '').toLowerCase() === 'true' || port === 465;
@@ -183,11 +193,13 @@ async function sendMail({ to, subject, text, html, from, attachments }: any) {
     // Check for common Render/cloud platform issues
     if (error.code === 'ECONNREFUSED' || error.code === 'ETIMEDOUT' || error.code === 'ENOTFOUND') {
       console.error('[SMTP] ⚠️  Connection issue detected. This is common on cloud platforms like Render.');
-      console.error('[SMTP] 💡 Solutions:');
-      console.error('[SMTP]   1. Use SendGrid API (MAIL_PROVIDER=sendgrid) instead of SMTP');
-      console.error('[SMTP]   2. Use Mailgun, AWS SES, or other API-based email services');
-      console.error('[SMTP]   3. Check if Render allows outbound SMTP connections on port', process.env.SMTP_PORT);
-      console.error('[SMTP]   4. Verify SMTP server allows connections from Render IP ranges');
+      console.error('[SMTP] 💡 Solutions for SMTP on Render:');
+      console.error('[SMTP]   1. Upgrade to Render paid plan (allows SMTP ports 25, 465, 587)');
+      console.error('[SMTP]   2. Use alternative SMTP port 2525 (set SMTP_ALT_PORT=2525)');
+      console.error('[SMTP]   3. Configure your SMTP server to accept connections on port 2525');
+      console.error('[SMTP]   4. Use SMTP relay service that supports alternative ports');
+      console.error('[SMTP]   5. Use API-based services (SendGrid, Mailgun) as fallback');
+      console.error('[SMTP]   6. Verify SMTP server allows connections from Render IP ranges');
     }
     
     // Clear cached transporter on error to force reconnect on retry
