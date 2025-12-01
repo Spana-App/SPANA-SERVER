@@ -28,119 +28,136 @@ const defaultServices = [
     description: '24/7 emergency plumbing services for leaks, clogs, and urgent repairs. Fast response time guaranteed.',
     price: 450,
     duration: 120,
-    mediaUrl: 'https://example.com/services/emergency-plumbing.jpg'
+    // Real stock-style image (dynamic) for emergency plumbing
+    mediaUrl: 'https://source.unsplash.com/featured/?plumber,emergency,leak,repair'
   },
   {
     title: 'Pipe Repair',
     description: 'Professional pipe repair and replacement services. Fix leaks, burst pipes, and damaged plumbing.',
     price: 350,
     duration: 90,
-    mediaUrl: 'https://example.com/services/pipe-repair.jpg'
+    // Real image for pipe repair
+    mediaUrl: 'https://source.unsplash.com/featured/?plumbing,pipes,repair'
   },
   {
     title: 'Drain Cleaning',
     description: 'Expert drain cleaning and unclogging services. Clear blocked drains and prevent future issues.',
     price: 280,
     duration: 60,
-    mediaUrl: 'https://example.com/services/drain-cleaning.jpg'
+    // Real image for drain cleaning
+    mediaUrl: 'https://source.unsplash.com/featured/?plumber,drain,cleaning,clog'
   },
   {
     title: 'Electrical Repair',
     description: 'Professional electrical repair services. Fix faulty wiring, outlets, switches, and electrical issues.',
     price: 400,
     duration: 90,
-    mediaUrl: 'https://example.com/services/electrical-repair.jpg'
+    // Real image for electrical repair
+    mediaUrl: 'https://source.unsplash.com/featured/?electrician,electrical,repair'
   },
   {
     title: 'Wiring Installation',
     description: 'Safe and professional wiring installation for homes and businesses. Code-compliant work guaranteed.',
     price: 550,
     duration: 180,
-    mediaUrl: 'https://example.com/services/wiring-installation.jpg'
+    // Real image for wiring installation
+    mediaUrl: 'https://source.unsplash.com/featured/?electrician,wiring,installation'
   },
   {
     title: 'Light Installation',
     description: 'Installation of lighting fixtures, chandeliers, and outdoor lighting. Professional and safe.',
     price: 300,
     duration: 75,
-    mediaUrl: 'https://example.com/services/light-installation.jpg'
+    // Real image for light installation
+    mediaUrl: 'https://source.unsplash.com/featured/?electrician,lighting,installation'
   },
   {
     title: 'House Cleaning',
     description: 'Comprehensive house cleaning services. Deep cleaning, regular maintenance, and move-in/out cleaning.',
     price: 450,
     duration: 180,
-    mediaUrl: 'https://example.com/services/house-cleaning.jpg'
+    // Real image for house cleaning
+    mediaUrl: 'https://source.unsplash.com/featured/?house,cleaning,maid,interior'
   },
   {
     title: 'Office Cleaning',
     description: 'Professional office cleaning services. Keep your workspace clean and productive.',
     price: 600,
     duration: 240,
-    mediaUrl: 'https://example.com/services/office-cleaning.jpg'
+    // Real image for office cleaning
+    mediaUrl: 'https://source.unsplash.com/featured/?office,cleaning,janitor'
   },
   {
     title: 'Deep Cleaning',
     description: 'Thorough deep cleaning service. Detailed cleaning of all areas including hard-to-reach places.',
     price: 750,
     duration: 300,
-    mediaUrl: 'https://example.com/services/deep-cleaning.jpg'
+    // Real image for deep cleaning
+    mediaUrl: 'https://source.unsplash.com/featured/?deep,cleaning,house'
   },
   {
     title: 'Furniture Repair',
     description: 'Expert furniture repair and restoration services. Fix broken chairs, tables, and wooden furniture.',
     price: 400,
     duration: 120,
-    mediaUrl: 'https://example.com/services/furniture-repair.jpg'
+    // Real image for furniture repair
+    mediaUrl: 'https://source.unsplash.com/featured/?carpenter,furniture,repair,woodworking'
   },
   {
     title: 'Cabinet Installation',
     description: 'Professional cabinet installation and repair. Kitchen, bathroom, and custom cabinets.',
     price: 650,
     duration: 240,
-    mediaUrl: 'https://example.com/services/cabinet-installation.jpg'
+    // Real image for cabinet installation
+    mediaUrl: 'https://source.unsplash.com/featured/?kitchen,cabinet,installation,carpenter'
   },
   {
     title: 'Door Repair',
     description: 'Door repair and installation services. Fix squeaky doors, broken locks, and damaged frames.',
     price: 350,
     duration: 90,
-    mediaUrl: 'https://example.com/services/door-repair.jpg'
+    // Real image for door repair
+    mediaUrl: 'https://source.unsplash.com/featured/?door,repair,carpenter,handyman'
   },
   {
     title: 'Interior Painting',
     description: 'Professional interior painting services. Transform your home with quality paint work.',
     price: 500,
     duration: 240,
-    mediaUrl: 'https://example.com/services/interior-painting.jpg'
+    // Real image for interior painting
+    mediaUrl: 'https://source.unsplash.com/featured/?interior,painting,painter,home'
   },
   {
     title: 'Exterior Painting',
     description: 'Exterior painting and weatherproofing. Protect and beautify your home exterior.',
     price: 800,
     duration: 360,
-    mediaUrl: 'https://example.com/services/exterior-painting.jpg'
+    // Real image for exterior painting
+    mediaUrl: 'https://source.unsplash.com/featured/?exterior,painting,house,facade'
   },
   {
     title: 'Lawn Mowing',
     description: 'Regular lawn mowing and grass cutting services. Keep your lawn neat and well-maintained.',
     price: 250,
     duration: 90,
-    mediaUrl: 'https://example.com/services/lawn-mowing.jpg'
+    // Real image for lawn mowing
+    mediaUrl: 'https://source.unsplash.com/featured/?lawn,mowing,gardener,grass'
   },
   {
     title: 'Garden Design',
     description: 'Professional garden design and landscaping services. Create beautiful outdoor spaces.',
     price: 1200,
     duration: 480,
-    mediaUrl: 'https://example.com/services/garden-design.jpg'
+    // Real image for garden design
+    mediaUrl: 'https://source.unsplash.com/featured/?garden,design,landscaping'
   },
   {
     title: 'Tree Trimming',
     description: 'Safe tree trimming and pruning services. Maintain healthy trees and improve aesthetics.',
     price: 450,
     duration: 120,
-    mediaUrl: 'https://example.com/services/tree-trimming.jpg'
+    // Real image for tree trimming
+    mediaUrl: 'https://source.unsplash.com/featured/?tree,trimming,arborist'
   },
 ];
 

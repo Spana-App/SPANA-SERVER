@@ -231,7 +231,9 @@ async function main() {
             description: `Professional ${serviceName.toLowerCase()} services by ${user.firstName}. Experienced and reliable.`,
             price: Math.floor(Math.random() * 800) + 200, // 200-1000
             duration: Math.floor(Math.random() * 180) + 60, // 60-240 minutes
-            mediaUrl: `https://example.com/services/${serviceName.toLowerCase().replace(' ', '-')}.jpg`,
+            // Use real stock-style images (dynamic) based on service name
+            // Unsplash Source returns a real photo every time, no placeholders.
+            mediaUrl: `https://source.unsplash.com/featured/?${encodeURIComponent(serviceName + ' service')}`,
             status: 'active',
             adminApproved: true,
             approvedBy: (await prisma.user.findFirst({ where: { role: 'admin' } }))?.id,
