@@ -516,20 +516,31 @@ exports.login = async (req, res) => {
 // Update current user profile
 exports.updateProfile = async (req, res) => {
     try {
-        const { firstName, lastName, phone } = req.body;
-        // Validate required fields
-        if (!firstName || !lastName) {
-            return res.status(400).json({ message: 'First name and last name are required' });
+        const body = req.body || {};
+        // Get current user with role-specific data
+        const user = await database_1.default.user.findUnique({
+            where: { id: req.user.id },
+            include: {
+                customer: true,
+                serviceProvider: true
+            }
+        });
+        if (!user) {
+            return res.status(404).json({ message: 'User not found' });
         }
         // Prepare update data (email is read-only, so we don't allow it to be changed)
-        const updateData = {
-            firstName: firstName.trim(),
-            lastName: lastName.trim()
-        };
-        // Phone is optional
-        if (phone !== undefined) {
-            updateData.phone = phone ? phone.trim() : null;
-        }
+        const updateData = {};
+        // Always-allowed common fields
+        if (typeof body.firstName === 'string')
+            updateData.firstName = body.firstName.trim();
+        if (typeof body.lastName === 'string')
+            updateData.lastName = body.lastName.trim();
+        if (typeof body.phone === 'string')
+            updateData.phone = body.phone.trim();
+        if (body.location !== undefined)
+            updateData.location = body.location;
+        if (typeof body.profileImage === 'string')
+            updateData.profileImage = body.profileImage;
         // Update user
         const updatedUser = await database_1.default.user.update({
             where: { id: req.user.id },
@@ -539,11 +550,80 @@ exports.updateProfile = async (req, res) => {
                 serviceProvider: true
             }
         });
+        // Update role-specific data
+        if (user.role === 'customer' && body.customerDetails) {
+            await database_1.default.customer.update({
+                where: { userId: user.id },
+                data: {
+                    favouriteProviders: body.customerDetails.favouriteProviders !== undefined
+                        ? body.customerDetails.favouriteProviders
+                        : user.customer?.favouriteProviders || [],
+                    totalBookings: typeof body.customerDetails.totalBookings === 'number'
+                        ? body.customerDetails.totalBookings
+                        : (user.customer?.totalBookings || 0),
+                    ratingGivenAvg: typeof body.customerDetails.ratingGivenAvg === 'number'
+                        ? body.customerDetails.ratingGivenAvg
+                        : (user.customer?.ratingGivenAvg || 0)
+                }
+            });
+        }
+        else if (user.role === 'service_provider' && body.providerDetails) {
+            const providerUpdateData = {};
+            if (Array.isArray(body.providerDetails.skills))
+                providerUpdateData.skills = body.providerDetails.skills;
+            if (typeof body.providerDetails.experienceYears === 'number')
+                providerUpdateData.experienceYears = body.providerDetails.experienceYears;
+            if (typeof body.providerDetails.isOnline === 'boolean')
+                providerUpdateData.isOnline = body.providerDetails.isOnline;
+            if (body.providerDetails.availability)
+                providerUpdateData.availability = body.providerDetails.availability;
+            if (body.providerDetails.serviceArea) {
+                providerUpdateData.serviceAreaRadius = body.providerDetails.serviceArea.radiusInKm !== undefined
+                    ? body.providerDetails.serviceArea.radiusInKm
+                    : user.serviceProvider?.serviceAreaRadius;
+                providerUpdateData.serviceAreaCenter = body.providerDetails.serviceArea.baseLocation !== undefined
+                    ? body.providerDetails.serviceArea.baseLocation
+                    : user.serviceProvider?.serviceAreaCenter;
+            }
+            if (typeof body.providerDetails.isProfileComplete === 'boolean')
+                providerUpdateData.isProfileComplete = body.providerDetails.isProfileComplete;
+            // Also support direct fields for backward compatibility
+            if (Array.isArray(body.skills))
+                providerUpdateData.skills = body.skills;
+            if (typeof body.experienceYears === 'number')
+                providerUpdateData.experienceYears = body.experienceYears;
+            if (typeof body.isOnline === 'boolean')
+                providerUpdateData.isOnline = body.isOnline;
+            if (body.availability)
+                providerUpdateData.availability = body.availability;
+            if (body.serviceArea) {
+                providerUpdateData.serviceAreaRadius = body.serviceArea.radiusInKm !== undefined
+                    ? body.serviceArea.radiusInKm
+                    : user.serviceProvider?.serviceAreaRadius;
+                providerUpdateData.serviceAreaCenter = body.serviceArea.baseLocation !== undefined
+                    ? body.serviceArea.baseLocation
+                    : user.serviceProvider?.serviceAreaCenter;
+            }
+            if (Object.keys(providerUpdateData).length > 0) {
+                await database_1.default.serviceProvider.update({
+                    where: { userId: user.id },
+                    data: providerUpdateData
+                });
+            }
+        }
+        // Fetch updated user with all role-specific data
+        const userWithRole = await database_1.default.user.findUnique({
+            where: { id: req.user.id },
+            include: {
+                customer: true,
+                serviceProvider: true
+            }
+        });
         // Shape response by role (same format as getMe)
         let userResponse;
-        if (updatedUser.role === 'customer' && updatedUser.customer) {
-            const { id, email, firstName, lastName, phone, role, isEmailVerified, isPhoneVerified, profileImage, location, walletBalance, status, createdAt, updatedAt } = updatedUser;
-            const { favouriteProviders, totalBookings, ratingGivenAvg } = updatedUser.customer;
+        if (userWithRole?.role === 'customer' && userWithRole.customer) {
+            const { id, email, firstName, lastName, phone, role, isEmailVerified, isPhoneVerified, profileImage, location, walletBalance, status, createdAt, updatedAt } = userWithRole;
+            const { favouriteProviders, totalBookings, ratingGivenAvg } = userWithRole.customer;
             userResponse = {
                 _id: id, email, firstName, lastName, phone, role, isVerified: false, isEmailVerified, isPhoneVerified,
                 profileImage, location, walletBalance, status,
@@ -551,9 +631,9 @@ exports.updateProfile = async (req, res) => {
                 createdAt, updatedAt, __v: 0
             };
         }
-        else if (updatedUser.role === 'service_provider' && updatedUser.serviceProvider) {
-            const { id, email, firstName, lastName, phone, role, isEmailVerified, isPhoneVerified, profileImage, location, walletBalance, status, createdAt, updatedAt } = updatedUser;
-            const { skills, experienceYears, isOnline, rating, totalReviews, isVerified, isIdentityVerified, availability, serviceAreaRadius, serviceAreaCenter, isProfileComplete } = updatedUser.serviceProvider;
+        else if (userWithRole?.role === 'service_provider' && userWithRole.serviceProvider) {
+            const { id, email, firstName, lastName, phone, role, isEmailVerified, isPhoneVerified, profileImage, location, walletBalance, status, createdAt, updatedAt } = userWithRole;
+            const { skills, experienceYears, isOnline, rating, totalReviews, isVerified, isIdentityVerified, availability, serviceAreaRadius, serviceAreaCenter, isProfileComplete } = userWithRole.serviceProvider;
             userResponse = {
                 _id: id, email, firstName, lastName, phone, role, isVerified, isEmailVerified, isPhoneVerified, isIdentityVerified,
                 profileImage, skills, experienceYears, isOnline, rating, totalReviews, isProfileComplete,
@@ -561,24 +641,20 @@ exports.updateProfile = async (req, res) => {
                 location, walletBalance, status, createdAt, updatedAt, __v: 0
             };
         }
-        else if (updatedUser.role === 'admin') {
+        else if (userWithRole?.role === 'admin') {
             // Admin users - no walletBalance
+            const { id, email, firstName, lastName, phone, role, isEmailVerified, isPhoneVerified, profileImage, location, status, createdAt, updatedAt } = userWithRole;
             userResponse = {
-                _id: updatedUser.id, email: updatedUser.email, firstName: updatedUser.firstName, lastName: updatedUser.lastName,
-                phone: updatedUser.phone, role: updatedUser.role, isVerified: false, isEmailVerified: updatedUser.isEmailVerified,
-                isPhoneVerified: updatedUser.isPhoneVerified, profileImage: updatedUser.profileImage, location: updatedUser.location,
-                status: updatedUser.status, createdAt: updatedUser.createdAt,
-                updatedAt: updatedUser.updatedAt, __v: 0
+                _id: id, email, firstName, lastName, phone, role, isVerified: false, isEmailVerified, isPhoneVerified,
+                profileImage, location, status, createdAt, updatedAt, __v: 0
             };
         }
         else {
             // Fallback for other roles
+            const { id, email, firstName, lastName, phone, role, isEmailVerified, isPhoneVerified, profileImage, location, walletBalance, status, createdAt, updatedAt } = userWithRole || {};
             userResponse = {
-                _id: updatedUser.id, email: updatedUser.email, firstName: updatedUser.firstName, lastName: updatedUser.lastName,
-                phone: updatedUser.phone, role: updatedUser.role, isVerified: false, isEmailVerified: updatedUser.isEmailVerified,
-                isPhoneVerified: updatedUser.isPhoneVerified, profileImage: updatedUser.profileImage, location: updatedUser.location,
-                walletBalance: updatedUser.walletBalance, status: updatedUser.status, createdAt: updatedUser.createdAt,
-                updatedAt: updatedUser.updatedAt, __v: 0
+                _id: id, email, firstName, lastName, phone, role, isVerified: false, isEmailVerified, isPhoneVerified,
+                profileImage, location, walletBalance, status, createdAt, updatedAt, __v: 0
             };
         }
         res.json({
@@ -588,7 +664,7 @@ exports.updateProfile = async (req, res) => {
     }
     catch (error) {
         console.error('Update profile error:', error);
-        res.status(500).json({ message: 'Server error' });
+        res.status(500).json({ message: 'Server error', error: error instanceof Error ? error.message : 'Unknown error' });
     }
 };
 // Upload profile image
@@ -647,8 +723,18 @@ exports.uploadProfileImage = async (req, res) => {
                 location, walletBalance, status, createdAt, updatedAt, __v: 0
             };
         }
+        else if (updatedUser.role === 'admin') {
+            // Admin users - no walletBalance
+            userResponse = {
+                _id: updatedUser.id, email: updatedUser.email, firstName: updatedUser.firstName, lastName: updatedUser.lastName,
+                phone: updatedUser.phone, role: updatedUser.role, isVerified: false, isEmailVerified: updatedUser.isEmailVerified,
+                isPhoneVerified: updatedUser.isPhoneVerified, profileImage: updatedUser.profileImage, location: updatedUser.location,
+                status: updatedUser.status, createdAt: updatedUser.createdAt,
+                updatedAt: updatedUser.updatedAt, __v: 0
+            };
+        }
         else {
-            // Fallback for admin or other roles
+            // Fallback for other roles
             userResponse = {
                 _id: updatedUser.id, email: updatedUser.email, firstName: updatedUser.firstName, lastName: updatedUser.lastName,
                 phone: updatedUser.phone, role: updatedUser.role, isVerified: false, isEmailVerified: updatedUser.isEmailVerified,

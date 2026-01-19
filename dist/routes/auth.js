@@ -52,7 +52,8 @@ const imageUpload = multer({
 // Routes
 router.post('/register', registerValidation, authController.register);
 router.post('/login', loginValidation, authController.login);
-router.get('/me', auth, authController.getMe);
-router.put('/profile', auth, authController.updateProfile);
-router.post('/profile/image', auth, imageUpload.single('image'), authController.uploadProfileImage);
+router.get('/me', auth, authController.getMe); // Get current user's full profile
+router.put('/profile', auth, authController.updateProfile); // Update profile (supports partial updates)
+router.patch('/profile', auth, authController.updateProfile); // Partial profile update (alias for PUT)
+router.post('/profile/image', auth, imageUpload.single('image'), authController.uploadProfileImage); // Upload profile image
 module.exports = router;

@@ -23,6 +23,8 @@ const activityRoutes = require('./routes/activities');
 const uploadRoutes = require('./routes/upload');
 const workflowRoutes = require('./routes/workflows');
 const chatRoutes = require('./routes/chat');
+const providerRoutes = require('./routes/provider');
+const mapRoutes = require('./routes/maps');
 
 // Initialize Express app
 const app = express();
@@ -496,6 +498,7 @@ app.use('/payments', paymentRoutes);
 app.use('/notifications', notificationRoutes);
 app.use('/activities', activityRoutes);
 app.use('/uploads', uploadRoutes);
+app.use('/maps', mapRoutes);
 app.use('/workflows', workflowRoutes);
 app.use('/email-verification', require('./routes/emailVerification'));
 app.use('/admin', require('./routes/admin'));
@@ -504,6 +507,7 @@ app.use('/privacy', require('./routes/privacy'));
 app.use('/complaints', require('./routes/complaints'));
 app.use('/stats', require('./routes/stats'));
 app.use('/chat', chatRoutes);
+app.use('/provider', providerRoutes);
 
 // Health check endpoint with Redis status
 app.get('/health', async (req: any, res: any) => {

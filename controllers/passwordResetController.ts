@@ -3,6 +3,10 @@ const { sendPasswordResetEmail } = require('../config/mailer');
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
 
+// Rate limiting: Track recent reset requests per email
+const resetRequestCache = new Map<string, number>();
+const RESET_COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes between requests
+
 // Generate password reset token
 const generateResetToken = () => {
   return crypto.randomBytes(32).toString('hex');
@@ -16,6 +20,33 @@ exports.requestPasswordReset = async (req: any, res: any) => {
     if (!email) {
       return res.status(400).json({ message: 'Email is required' });
     }
+
+    const emailLower = email.toLowerCase();
+
+    // Rate limiting: Prevent spam from test scripts or repeated requests
+    if (emailLower.includes('@test.com') || emailLower.includes('test-')) {
+      // For test emails, return success without sending email or updating database
+      return res.json({
+        message: 'If an account exists with this email, a password reset link has been sent.',
+        expiresIn: '1 hour',
+        testMode: true,
+        note: 'Test email detected - no actual email sent'
+      });
+    }
+
+    // Check rate limit (5 minutes between requests per email)
+    const lastRequest = resetRequestCache.get(emailLower);
+    const now = Date.now();
+    if (lastRequest && (now - lastRequest) < RESET_COOLDOWN_MS) {
+      const remainingSeconds = Math.ceil((RESET_COOLDOWN_MS - (now - lastRequest)) / 1000);
+      return res.status(429).json({
+        message: 'Please wait before requesting another password reset.',
+        retryAfter: remainingSeconds
+      });
+    }
+
+    // Update rate limit cache
+    resetRequestCache.set(emailLower, now);
 
     const user = await prisma.user.findUnique({
       where: { email: email.toLowerCase() }

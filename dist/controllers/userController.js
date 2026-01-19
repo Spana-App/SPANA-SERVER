@@ -55,7 +55,12 @@ exports.getUserById = async (req, res) => {
         if (!user) {
             return res.status(404).json({ message: 'User not found' });
         }
-        res.json(user);
+        // Remove walletBalance for admin users
+        const userResponse = { ...user };
+        if (user.role === 'admin') {
+            delete userResponse.walletBalance;
+        }
+        res.json(userResponse);
     }
     catch (error) {
         res.status(500).json({ message: 'Server error' });
@@ -114,6 +119,11 @@ exports.updateUser = async (req, res) => {
                 updatedAt: true
             }
         });
+        // Remove walletBalance for admin users in response
+        const userResponse = { ...updatedUser };
+        if (updatedUser.role === 'admin') {
+            delete userResponse.walletBalance;
+        }
         // Update role-specific data
         if (user.role === 'customer' && body.customerDetails) {
             await prisma.customer.update({
@@ -148,7 +158,7 @@ exports.updateUser = async (req, res) => {
                 });
             }
         }
-        res.json(updatedUser);
+        res.json(userResponse);
     }
     catch (error) {
         res.status(500).json({ message: 'Server error' });

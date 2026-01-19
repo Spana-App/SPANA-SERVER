@@ -149,3 +149,4 @@ SMTP_PASS=your_password
 
 **Note:** The code will automatically try alternative ports on Render, but your SMTP server must support those ports for it to work.
 
+

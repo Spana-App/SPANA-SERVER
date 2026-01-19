@@ -1,29 +1,138 @@
 import prisma from '../lib/database';
+import { getBestAvailableProvider, getLocationMultiplier } from '../lib/providerMatching';
 // import { syncBookingToMongo } from '../lib/mongoSync';
 
-// Create a new booking REQUEST (Uber-style)
+// Create a new booking REQUEST (Uber-style) - Automatic provider matching
 exports.createBooking = async (req: any, res: any) => {
   try {
-    const { serviceId, date, time, location, notes, estimatedDurationMinutes, jobSize, customPrice } = req.body;
+    const { serviceTitle, serviceId, date, time, location, notes, estimatedDurationMinutes, jobSize, customPrice, requiredSkills } = req.body;
 
-    // Get service to find provider
-    const service = await prisma.service.findUnique({
-      where: { id: serviceId },
-      include: { provider: { include: { user: true } } }
+    // Validate location is provided (required for tracking)
+    if (!location || !location.coordinates || location.coordinates.length !== 2) {
+      return res.status(400).json({ 
+        message: 'Location with coordinates is required. Please enable location services on your device.' 
+      });
+    }
+
+    // Get customer location
+    const customer = await prisma.customer.findUnique({
+      where: { userId: req.user.id },
+      include: { user: true }
     });
 
-    if (!service) {
-      return res.status(404).json({ message: 'Service not found' });
+    if (!customer) {
+      return res.status(404).json({ message: 'Customer profile not found' });
     }
 
-    // Check if service is admin-approved
-    if (!service.adminApproved || service.status !== 'active') {
-      return res.status(400).json({ message: 'Service is not available for booking' });
+    // Ensure customer has location set
+    if (!customer.user.location) {
+      return res.status(400).json({ 
+        message: 'Customer location not set. Please update your location in profile settings.' 
+      });
     }
 
-    // Check if service has a provider assigned
-    if (!service.providerId || !service.provider) {
-      return res.status(400).json({ message: 'Service does not have a provider assigned yet. Please contact support.' });
+    let service: any;
+    let providerMatch: any = null;
+
+    // If serviceId provided, use existing service
+    if (serviceId) {
+      service = await prisma.service.findUnique({
+        where: { id: serviceId },
+        include: { provider: { include: { user: true } } }
+      });
+
+      if (!service) {
+        return res.status(404).json({ message: 'Service not found' });
+      }
+
+      // Check if service is admin-approved
+      if (!service.adminApproved || service.status !== 'active') {
+        return res.status(400).json({ message: 'Service is not available for booking' });
+      }
+
+      // Check if assigned provider is online and available
+      if (service.provider) {
+        const isBusy = await prisma.booking.findFirst({
+          where: {
+            service: { providerId: service.provider.id },
+            status: { in: ['confirmed', 'in_progress', 'pending_payment'] }
+          }
+        });
+
+        if (service.provider.isOnline && !isBusy) {
+          // Provider is available - use assigned provider
+          providerMatch = {
+            provider: service.provider,
+            service: service,
+            distance: 0,
+            locationMultiplier: getLocationMultiplier(location.address, location.coordinates),
+            adjustedPrice: service.price
+          };
+        } else {
+          // Provider not available - try to find alternative, otherwise queue
+          try {
+            providerMatch = await getBestAvailableProvider(
+              service.title,
+              service.provider.skills || [],
+              location,
+              service.price
+            );
+          } catch (error) {
+            console.error('Error finding alternative provider:', error);
+            // If matching fails, queue the request
+            providerMatch = null;
+          }
+        }
+      } else {
+        // Service has no provider assigned - find one automatically
+        try {
+          providerMatch = await getBestAvailableProvider(
+            service.title,
+            [],
+            location,
+            service.price
+          );
+        } catch (error) {
+          console.error('Error finding provider for service:', error);
+          providerMatch = null;
+        }
+      }
+    } else if (serviceTitle) {
+      // Automatic provider matching based on service title
+      const skills = requiredSkills || [];
+      providerMatch = await getBestAvailableProvider(
+        serviceTitle,
+        skills,
+        location,
+        1000 // Default base price, will be adjusted
+      );
+
+      if (!providerMatch) {
+        // No providers available - add to queue
+        return res.status(202).json({
+          message: 'No providers available at this time. Your request has been queued.',
+          queued: true,
+          estimatedWaitTime: '5-15 minutes',
+          nextStep: 'wait_for_provider'
+        });
+      }
+
+      // Find or create service for the matched provider
+      service = providerMatch.service;
+    } else {
+      return res.status(400).json({ 
+        message: 'Either serviceId or serviceTitle with requiredSkills must be provided' 
+      });
+    }
+
+    // If no provider match found, queue the request
+    if (!providerMatch) {
+      return res.status(202).json({
+        message: 'No providers available at this time. Your request has been queued.',
+        queued: true,
+        estimatedWaitTime: '5-15 minutes',
+        nextStep: 'wait_for_provider'
+      });
     }
 
     // Job size calculation
@@ -34,29 +143,49 @@ exports.createBooking = async (req: any, res: any) => {
       custom: 1.0
     };
 
-    const basePrice = service.price;
+    // Use location-adjusted price from provider matching
+    const basePrice = providerMatch.adjustedPrice || service.price;
     const selectedJobSize = jobSize || 'medium';
     const multiplier = jobSizeMultipliers[selectedJobSize] || 1.0;
     const calculatedPrice = selectedJobSize === 'custom' && customPrice 
       ? parseFloat(customPrice) 
       : basePrice * multiplier;
 
-    // Get customer record for the user
-    const customer = await prisma.customer.findUnique({
-      where: { userId: req.user.id }
-    });
+    // Validate date - must be same day (immediate service like Uber)
+    const bookingDate = new Date(date);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0); // Start of today
+    const bookingDateOnly = new Date(bookingDate);
+    bookingDateOnly.setHours(0, 0, 0, 0); // Start of booking date
+    
+    // Check if booking date is today
+    if (bookingDateOnly.getTime() !== today.getTime()) {
+      return res.status(400).json({ 
+        message: 'Bookings must be for today only. All services are immediate attention like Uber - no future bookings allowed.',
+        receivedDate: bookingDate.toISOString(),
+        today: today.toISOString()
+      });
+    }
 
-    if (!customer) {
-      return res.status(404).json({ message: 'Customer profile not found' });
+    // Check if booking time is in the past (for today's bookings)
+    const bookingDateTime = new Date(date);
+    const now = new Date();
+    if (bookingDateTime < now) {
+      return res.status(400).json({ 
+        message: 'Booking time cannot be in the past. Please select a current or future time for today.',
+        receivedTime: bookingDateTime.toISOString(),
+        currentTime: now.toISOString()
+      });
     }
 
     // Create booking request - Customer must pay first before provider allocation
     // Status: pending_payment (waiting for payment)
+    // Date is set to current time for immediate service
     const booking = await prisma.booking.create({
       data: {
         customerId: customer.id,
-        serviceId,
-        date: new Date(date),
+        serviceId: service.id,
+        date: bookingDateTime, // Use validated date/time
         time,
         location,
         notes,
@@ -67,7 +196,9 @@ exports.createBooking = async (req: any, res: any) => {
         calculatedPrice: calculatedPrice,
         status: 'pending_payment', // NEW: Waiting for payment
         requestStatus: 'pending', // Will be sent to providers after payment
-        paymentStatus: 'pending' // Payment required
+        paymentStatus: 'pending', // Payment required
+        locationMultiplier: providerMatch.locationMultiplier, // Store location multiplier
+        providerDistance: providerMatch.distance // Store distance to provider
       },
       include: {
         service: {
@@ -97,18 +228,20 @@ exports.createBooking = async (req: any, res: any) => {
       await workflowClient.createWorkflowForBooking(booking.id, defaultSteps).catch(() => {});
     } catch (_) {}
 
-    // Notify provider via socket (only if provider exists)
+    // Notify matched provider via socket
     try {
       const app = require('../server');
       const io = app.get && app.get('io');
-      if (io && service.provider && service.provider.user && service.provider.user.id) {
-        io.to(service.provider.user.id).emit('new-booking-request', {
+      if (io && providerMatch && providerMatch.provider && providerMatch.provider.user) {
+        io.to(providerMatch.provider.user.id).emit('new-booking-request', {
           bookingId: booking.id,
           service: service.title,
           customer: `${req.user.firstName} ${req.user.lastName}`,
           date: booking.date,
           time: booking.time,
-          location: booking.location
+          location: booking.location,
+          distance: providerMatch.distance,
+          adjustedPrice: calculatedPrice
         });
       }
     } catch (_) {}
@@ -133,8 +266,11 @@ exports.createBooking = async (req: any, res: any) => {
     }
 
     res.status(201).json({
-      message: 'Booking created. Payment required before provider allocation.',
+      message: 'Booking created. Provider matched and notified. Payment required before service starts.',
       booking: responseBooking,
+      providerMatched: true,
+      providerDistance: providerMatch.distance,
+      locationMultiplier: providerMatch.locationMultiplier,
       paymentRequired: true,
       amount: calculatedPrice,
       nextStep: 'payment'

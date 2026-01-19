@@ -42,12 +42,14 @@ exports.createPaymentIntent = async (req, res) => {
       return res.status(404).json({ message: 'Booking not found' });
     }
 
-    if (booking.requestStatus !== 'accepted') {
-      return res.status(400).json({ message: 'Booking must be accepted by provider first' });
+    // Allow payment when booking is pending_payment (customer pays first, then provider accepts)
+    if (booking.status !== 'pending_payment' && booking.paymentStatus === 'paid_to_escrow') {
+      return res.status(400).json({ message: 'Payment already processed' });
     }
 
+    // Payment should happen BEFORE provider acceptance (Uber-style: pay first, then provider accepts)
     if (booking.paymentStatus === 'paid_to_escrow') {
-      return res.status(400).json({ message: 'Payment already processed' });
+      return res.status(400).json({ message: 'Payment already completed' });
     }
 
     // Calculate commission (15% default) - commission on base amount only, tip goes 100% to provider
@@ -82,8 +84,12 @@ exports.createPaymentIntent = async (req, res) => {
       }
     });
 
-    // Payment simulation mode (for development/testing when PayFast not configured)
-    const simulatePayment = !PAYFAST_MERCHANT_ID || process.env.NODE_ENV === 'development' || req.body.simulate === true;
+    // Check if PayFast is configured
+    const payfastConfigured = PAYFAST_MERCHANT_ID && PAYFAST_MERCHANT_KEY && PAYFAST_PASSPHRASE;
+    
+    // Payment simulation mode DISABLED by default
+    // Only works if PayFast is configured AND explicitly requested with simulate=true
+    const simulatePayment = req.body.simulate === true && payfastConfigured;
     
     if (simulatePayment) {
       // Simulate payment success
@@ -104,12 +110,12 @@ exports.createPaymentIntent = async (req, res) => {
       const { generateChatToken } = require('../lib/chatTokens');
       const customerChatToken = generateChatToken(bookingId, req.user.id, 'customer');
       
-      // Update booking
+      // Update booking - payment completed, waiting for provider acceptance
       const updatedBooking = await prisma.booking.update({
         where: { id: bookingId },
         data: {
           paymentStatus: 'paid_to_escrow',
-          status: 'confirmed',
+          status: 'pending_acceptance', // Changed from 'confirmed' - provider must accept first
           invoiceNumber: invoiceNumber,
           invoiceSentAt: new Date(),
           customerChatToken, // Generate token when payment confirmed
@@ -227,7 +233,21 @@ exports.createPaymentIntent = async (req, res) => {
       });
     }
 
-    // Real PayFast payment flow
+    // Real PayFast payment flow (only if credentials are configured)
+    if (!payfastConfigured) {
+      return res.status(503).json({
+        message: 'PayFast payment gateway is not configured. Payment simulation is disabled.',
+        error: 'PAYFAST_NOT_CONFIGURED',
+        instructions: 'To enable PayFast payments, add PAYFAST_MERCHANT_ID, PAYFAST_MERCHANT_KEY, and PAYFAST_PASSPHRASE to your .env file',
+        paymentId: payment.id,
+        amount: totalAmount,
+        baseAmount: baseAmount,
+        tipAmount: tip,
+        currency: 'ZAR',
+        simulated: false
+      });
+    }
+
     const payfastData: any = {
       merchant_id: PAYFAST_MERCHANT_ID,
       merchant_key: PAYFAST_MERCHANT_KEY,
@@ -263,7 +283,8 @@ exports.createPaymentIntent = async (req, res) => {
       amount: totalAmount,
       baseAmount: baseAmount,
       tipAmount: tip,
-      currency: 'ZAR'
+      currency: 'ZAR',
+      configured: true
     });
   } catch (error) {
     console.error('createPaymentIntent error', error);
@@ -333,12 +354,12 @@ exports.payfastWebhook = async (req, res) => {
       });
       const customerChatToken = customer ? generateChatToken(bookingId, customer.customer.userId, 'customer') : null;
       
-      // Update booking with invoice number and chat token
+      // Update booking with invoice number and chat token - payment completed, waiting for provider acceptance
       const updatedBooking = await prisma.booking.update({
         where: { id: bookingId },
         data: {
           paymentStatus: 'paid_to_escrow',
-          status: 'confirmed',
+          status: 'pending_acceptance', // Provider must accept after payment
           invoiceNumber: invoiceNumber,
           invoiceSentAt: new Date(),
           customerChatToken, // Generate token when payment confirmed

@@ -163,6 +163,8 @@ model Booking {
   basePrice              Float?   // Base service price
   jobSizeMultiplier      Float?   @default(1.0) // Multiplier based on job size
   calculatedPrice        Float?   // Final calculated price
+  locationMultiplier     Float?   @default(1.0) // Location-based price multiplier (e.g., Sandton=1.3, Soweto=0.85)
+  providerDistance       Float?   // Distance to provider in km
   
   // SLA tracking
   estimatedDurationMinutes Int    @default(0)

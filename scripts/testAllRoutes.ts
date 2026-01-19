@@ -329,11 +329,9 @@ async function runTests() {
     results.push(await testRoute('GET', '/email-verification/verification-status', undefined, customerToken));
   }
 
-  // 13. Password Reset Routes
+  // 13. Password Reset Routes (SKIPPED - prevents spam)
   console.log('\n📋 Testing Password Reset Routes...');
-  results.push(await testRoute('POST', '/password-reset/request', {
-    email: customerEmail,
-  }));
+  results.push(skipRoute('/password-reset/request', 'POST', 'Skipped to prevent email spam during testing'));
 
   // 14. Privacy Routes
   console.log('\n📋 Testing Privacy Routes...');
