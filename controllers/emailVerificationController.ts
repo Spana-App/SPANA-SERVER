@@ -10,7 +10,12 @@ const generateVerificationToken = () => {
 // Send verification email
 exports.sendVerificationEmail = async (req: any, res: any) => {
   try {
-    const { email } = req.body;
+    // Get email from body or from authenticated user
+    const email = req.body.email || req.user?.email;
+    
+    if (!email) {
+      return res.status(400).json({ message: 'Email is required' });
+    }
     
     // Find user by email
     const user = await prisma.user.findUnique({

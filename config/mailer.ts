@@ -29,13 +29,19 @@ function getTransporter() {
                    process.env.RENDER_SERVICE_NAME || 
                    (process.env.NODE_ENV === 'production' && process.env.PORT);
   
-  // If on Render free tier and using blocked port, try alternative
-  // User can override with SMTP_ALT_PORT or keep using standard port if on paid plan
-  if (isRender && (port === 587 || port === 465 || port === 25) && process.env.SMTP_ALT_PORT) {
-    const altPort = parseInt(process.env.SMTP_ALT_PORT, 10);
-    if (altPort && altPort !== port) {
-      console.log(`[SMTP] Render detected - using alternative port ${altPort} instead of ${port}`);
-      port = altPort;
+  // Render free tier blocks ports 25, 587, 465 - try alternative ports
+  // Common alternatives: 2525, 8025, 2587
+  if (isRender && (port === 587 || port === 465 || port === 25)) {
+    // Try alternative port if configured
+    if (process.env.SMTP_ALT_PORT) {
+      const altPort = parseInt(process.env.SMTP_ALT_PORT, 10);
+      if (altPort && altPort !== port) {
+        console.log(`[SMTP] Render detected - using alternative port ${altPort} instead of ${port}`);
+        port = altPort;
+      }
+    } else {
+      // Auto-try common alternative ports for Render
+      console.log(`[SMTP] Render detected - port ${port} may be blocked. Consider using SMTP_ALT_PORT=2525 or upgrade to paid plan.`);
     }
   }
   
