@@ -2,6 +2,10 @@ const nodemailer = require('nodemailer');
 const dotenv = require('dotenv');
 dotenv.config();
 
+// Import email service client (Vercel microservice)
+const emailService = require('../lib/emailService');
+const USE_EMAIL_SERVICE = process.env.USE_EMAIL_SERVICE === 'true' || !!process.env.EMAIL_SERVICE_URL;
+
 // Create transporter lazily to allow env to load first
 let cachedTransporter: any = null;
 
@@ -51,18 +55,18 @@ function getTransporter() {
   const pool = String(process.env.SMTP_POOL || '').toLowerCase() === 'true';
   const maxConnections = parseInt(process.env.SMTP_MAX_CONNECTIONS || '5', 10);
   const maxMessages = parseInt(process.env.SMTP_MAX_MESSAGES || '100', 10);
-  const provider = (process.env.MAIL_PROVIDER || 'smtp').toLowerCase();
   const sendgridApiKey = process.env.SENDGRID_API_KEY;
   
-  // Connection timeout settings (in milliseconds)
-  // Connection timeout settings (in milliseconds) - removed unused vars
-
-  if (!host || !user || !pass) {
-    throw new Error('SMTP configuration is missing. Please set SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS');
+  // Prioritize SendGrid if API key is available (works better on Render/cloud platforms)
+  let provider = (process.env.MAIL_PROVIDER || 'smtp').toLowerCase();
+  if (sendgridApiKey && !process.env.MAIL_PROVIDER) {
+    console.log('[SMTP] SendGrid API key detected - using SendGrid (recommended for cloud platforms)');
+    provider = 'sendgrid';
   }
 
   // Choose transport based on MAIL_PROVIDER
   if (provider === 'sendgrid') {
+    // SendGrid doesn't need SMTP_HOST, SMTP_USER, SMTP_PASS - skip validation
     // SendGrid via SMTP requires username 'apikey' and password = API key
     if (!sendgridApiKey) {
       throw new Error('SENDGRID_API_KEY is required when MAIL_PROVIDER=sendgrid');
@@ -87,6 +91,11 @@ function getTransporter() {
       logger: process.env.SMTP_DEBUG === 'true' // Enable logger
     });
   } else {
+    // Validate SMTP settings for non-SendGrid providers
+    if (!host || !user || !pass) {
+      throw new Error('SMTP configuration is missing. Please set SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS (or use SendGrid with SENDGRID_API_KEY)');
+    }
+    
     // sensible defaults for Office365 or generic SMTP
     const effectiveHost = host || 'smtp.office365.com';
     cachedTransporter = nodemailer.createTransport({
@@ -235,17 +244,34 @@ function buildWelcomeEmail({ firstName, lastName }: any) {
   const subject = 'Welcome to Spana!';
   const text = `Hi ${name},\n\nWelcome to Spana. Your account is now set up.\n\nThanks,\nThe Spana Team`;
   const html = `
-    <div style="font-family:Arial,Helvetica,sans-serif;line-height:1.5;color:#111">
-      <h2 style="margin:0 0 12px">Welcome to Spana, ${name}!</h2>
-      <p>Your account is now set up and ready to use.</p>
-      <p>If you didn't create this account, please contact support immediately.</p>
-      <p style="margin-top:24px">Thanks,<br/>The Spana Team</p>
+    <div style="font-family:Arial,Helvetica,sans-serif;line-height:1.5;color:#333;max-width:600px;margin:0 auto;padding:20px;">
+      <div style="background:#0066CC;padding:30px;text-align:center;border-radius:10px 10px 0 0;">
+        <h1 style="color:#ffffff;margin:0;font-size:28px;">Welcome to SPANA!</h1>
+      </div>
+      <div style="background:#F5F5F5;padding:30px;border-radius:0 0 10px 10px;">
+        <h2 style="color:#000000;margin:0 0 12px">Welcome to SPANA, ${name}!</h2>
+        <p>Your account is now set up and ready to use.</p>
+        <p>If you didn't create this account, please contact support immediately.</p>
+        <p style="margin-top:24px">Thanks,<br/>The SPANA Team</p>
+      </div>
     </div>
   `;
   return { subject, text, html };
 }
 
 async function sendWelcomeEmail(user: any) {
+  if (USE_EMAIL_SERVICE && emailService.isEmailServiceEnabled()) {
+    try {
+      return await emailService.sendWelcomeEmailViaService({
+        to: user.email,
+        name: `${user.firstName || ''} ${user.lastName || ''}`.trim() || user.email.split('@')[0],
+        role: user.role || 'customer'
+      });
+    } catch (error: any) {
+      console.error('[Mailer] Email service failed, falling back to SMTP:', error.message);
+      // Fall back to SMTP if email service fails
+    }
+  }
   const { subject, text, html } = buildWelcomeEmail({ firstName: user.firstName, lastName: user.lastName });
   return sendMailWithRetry({ to: user.email, subject, text, html });
 }
@@ -255,48 +281,79 @@ function buildVerificationEmail({ firstName, lastName, verificationLink }: any) 
   const subject = 'Verify your provider account';
   const text = `Hi ${name},\n\nPlease verify your provider account by visiting: ${verificationLink}\n\nThanks,\nThe Spana Team`;
   const html = `
-    <div style="font-family:Arial,Helvetica,sans-serif;line-height:1.5;color:#111">
-      <h3>Hi ${name},</h3>
-      <p>Please verify your provider account.</p>
-      <p><a href="${verificationLink}" style="background:#111;color:#fff;padding:10px 14px;text-decoration:none;border-radius:6px">Verify account</a></p>
-      <p>If the button doesn't work, copy this link:<br/><span style="word-break:break-all">${verificationLink}</span></p>
+    <div style="font-family:Arial,Helvetica,sans-serif;line-height:1.5;color:#333;max-width:600px;margin:0 auto;padding:20px;">
+      <div style="background:#0066CC;padding:30px;text-align:center;border-radius:10px 10px 0 0;">
+        <h1 style="color:#ffffff;margin:0;font-size:28px;">Verify Your Provider Account</h1>
+      </div>
+      <div style="background:#F5F5F5;padding:30px;border-radius:0 0 10px 10px;">
+        <h3 style="color:#000000;margin-top:0;">Hi ${name},</h3>
+        <p>Please verify your provider account.</p>
+        <div style="text-align:center;margin:20px 0;">
+          <a href="${verificationLink}" style="background:#0066CC;color:#fff;padding:12px 24px;text-decoration:none;border-radius:6px;font-weight:bold;display:inline-block;">Verify account</a>
+        </div>
+        <p>If the button doesn't work, copy this link:<br/><span style="word-break:break-all;color:#0066CC;">${verificationLink}</span></p>
+      </div>
     </div>
   `;
   return { subject, text, html };
 }
 
 async function sendVerificationEmail(user: any, verificationLink: string) {
+  if (USE_EMAIL_SERVICE && emailService.isEmailServiceEnabled()) {
+    try {
+      return await emailService.sendVerificationEmailViaService({
+        to: user.email,
+        name: `${user.firstName || ''} ${user.lastName || ''}`.trim() || user.email.split('@')[0],
+        verificationLink
+      });
+    } catch (error: any) {
+      console.error('[Mailer] Email service failed, falling back to SMTP:', error.message);
+      // Fall back to SMTP if email service fails
+    }
+  }
   const { subject, text, html } = buildVerificationEmail({ firstName: user.firstName, lastName: user.lastName, verificationLink });
   return sendMailWithRetry({ to: user.email, subject, text, html });
 }
 
 // New function for email verification (not provider verification)
 async function sendEmailVerification({ to, name, link }: any) {
+  if (USE_EMAIL_SERVICE && emailService.isEmailServiceEnabled()) {
+    try {
+      return await emailService.sendVerificationEmailViaService({
+        to,
+        name: name || to.split('@')[0],
+        verificationLink: link
+      });
+    } catch (error: any) {
+      console.error('[Mailer] Email service failed, falling back to SMTP:', error.message);
+      // Fall back to SMTP if email service fails
+    }
+  }
   const subject = 'Verify Your Email - Spana';
   const text = `Hi ${name},\n\nPlease verify your email by clicking this link: ${link}\n\nThis link expires in 24 hours.\n\nThanks,\nThe Spana Team`;
   // Extract HTML from the template below and send with retry
   const html = `
     <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background-color: #ffffff;">
-      <div style="background: #000000; padding: 30px; text-align: center; border-radius: 10px 10px 0 0;">
+      <div style="background: #0066CC; padding: 30px; text-align: center; border-radius: 10px 10px 0 0;">
         <h1 style="color: #ffffff; margin: 0; font-size: 28px;">Verify Your Email</h1>
       </div>
-      <div style="background: #ffffff; padding: 30px; border: 1px solid #e0e0e0; border-radius: 0 0 10px 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
+      <div style="background: #F5F5F5; padding: 30px; border: 1px solid #e0e0e0; border-radius: 0 0 10px 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
         <h2 style="color: #000000; margin-top: 0;">Hello ${name}!</h2>
         <p style="color: #333333; line-height: 1.6; font-size: 16px;">
-          Thank you for joining Spana! To complete your registration and ensure the security of your account, 
+          Thank you for joining SPANA! To complete your registration and ensure the security of your account, 
           please verify your email address by clicking the button below.
         </p>
         <p style="color: #333333; line-height: 1.6; font-size: 16px;">
           This verification link will expire in 24 hours for your security.
         </p>
         <div style="text-align: center; margin: 30px 0;">
-          <a href="${link}" style="background: #000000; color: #ffffff; padding: 15px 30px; text-decoration: none; border-radius: 4px; font-weight: bold; display: inline-block; font-size: 16px;">
+          <a href="${link}" style="background: #0066CC; color: #ffffff; padding: 15px 30px; text-decoration: none; border-radius: 4px; font-weight: bold; display: inline-block; font-size: 16px;">
             Verify My Email
           </a>
         </div>
         <p style="color: #666666; font-size: 14px; text-align: center; margin-top: 30px;">
           If the button doesn't work, copy and paste this link into your browser:<br>
-          <a href="${link}" style="color: #000000; word-break: break-all; text-decoration: underline;">${link}</a>
+          <a href="${link}" style="color: #0066CC; word-break: break-all; text-decoration: underline;">${link}</a>
         </p>
         <p style="color: #666666; font-size: 14px; text-align: center; margin-top: 20px;">
           If you didn't create this account, please ignore this email.
@@ -335,10 +392,10 @@ function buildPasswordResetEmail({ name, link }: any) {
   const text = `Hi ${name},\n\nYou requested to reset your password. Click this link to reset: ${link}\n\nThis link expires in 1 hour.\n\nIf you didn't request this, please ignore this email.\n\nThanks,\nThe Spana Team`;
   const html = `
     <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background-color: #ffffff;">
-      <div style="background: #000000; padding: 30px; text-align: center; border-radius: 10px 10px 0 0;">
+      <div style="background: #0066CC; padding: 30px; text-align: center; border-radius: 10px 10px 0 0;">
         <h1 style="color: #ffffff; margin: 0; font-size: 28px;">Reset Your Password</h1>
       </div>
-      <div style="background: #ffffff; padding: 30px; border: 1px solid #e0e0e0; border-radius: 0 0 10px 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
+      <div style="background: #F5F5F5; padding: 30px; border: 1px solid #e0e0e0; border-radius: 0 0 10px 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
         <h2 style="color: #000000; margin-top: 0;">Hello ${name}!</h2>
         <p style="color: #333333; line-height: 1.6; font-size: 16px;">
           You requested to reset your password. Click the button below to create a new password.
@@ -347,13 +404,13 @@ function buildPasswordResetEmail({ name, link }: any) {
           This link will expire in 1 hour for your security.
         </p>
         <div style="text-align: center; margin: 30px 0;">
-          <a href="${link}" style="background: #000000; color: #ffffff; padding: 15px 30px; text-decoration: none; border-radius: 4px; font-weight: bold; display: inline-block; font-size: 16px;">
+          <a href="${link}" style="background: #0066CC; color: #ffffff; padding: 15px 30px; text-decoration: none; border-radius: 4px; font-weight: bold; display: inline-block; font-size: 16px;">
             Reset Password
           </a>
         </div>
         <p style="color: #666666; font-size: 14px; text-align: center; margin-top: 30px;">
           If the button doesn't work, copy and paste this link into your browser:<br>
-          <a href="${link}" style="color: #000000; word-break: break-all; text-decoration: underline;">${link}</a>
+          <a href="${link}" style="color: #0066CC; word-break: break-all; text-decoration: underline;">${link}</a>
         </p>
         <p style="color: #333333; font-size: 14px; text-align: center; margin-top: 20px;">
           If you didn't request this password reset, please ignore this email. Your password will remain unchanged.
@@ -377,16 +434,16 @@ function buildInvoiceEmail({ name, invoiceNumber, bookingId, serviceTitle, amoun
   const text = `Invoice ${invoiceNumber}\n\nBooking: ${bookingId}\nService: ${serviceTitle}\nAmount: ${amount} ${currency}\nDate: ${date}`;
   const html = `
     <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background-color: #ffffff;">
-      <div style="background: #000000; padding: 30px; text-align: center; border-radius: 10px 10px 0 0;">
+      <div style="background: #0066CC; padding: 30px; text-align: center; border-radius: 10px 10px 0 0;">
         <h1 style="color: #ffffff; margin: 0; font-size: 28px;">Invoice</h1>
         <p style="color: #ffffff; margin: 5px 0 0 0; font-size: 18px;">${invoiceNumber}</p>
       </div>
-      <div style="background: white; padding: 30px; border-radius: 0 0 10px 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
+      <div style="background: #F5F5F5; padding: 30px; border-radius: 0 0 10px 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
         <h2 style="color: #333; margin-top: 0;">Hello ${name}!</h2>
         <p style="color: #666; line-height: 1.6; font-size: 16px;">
           Thank you for your payment. Please find your invoice details below.
         </p>
-        <div style="background: #f8f9fa; padding: 20px; border-radius: 8px; margin: 20px 0;">
+        <div style="background: #ffffff; padding: 20px; border-radius: 8px; margin: 20px 0; border: 1px solid #0066CC;">
           <table style="width: 100%; border-collapse: collapse;">
             <tr>
               <td style="padding: 8px 0; color: #666;"><strong>Booking ID:</strong></td>
@@ -413,12 +470,12 @@ function buildInvoiceEmail({ name, invoiceNumber, bookingId, serviceTitle, amoun
             ${tipAmount && tipAmount > 0 ? `
             <tr>
               <td style="padding: 8px 0; color: #666;"><strong>Tip:</strong></td>
-              <td style="padding: 8px 0; text-align: right; color: #000000;">+${tipAmount.toFixed(2)} ${currency}</td>
+              <td style="padding: 8px 0; text-align: right; color: #0066CC;">+${tipAmount.toFixed(2)} ${currency}</td>
             </tr>
             ` : ''}
-            <tr style="border-top: 2px solid #000000; margin-top: 10px;">
+            <tr style="border-top: 2px solid #0066CC; margin-top: 10px;">
               <td style="padding: 12px 0; color: #000000; font-size: 18px;"><strong>Total Amount:</strong></td>
-              <td style="padding: 12px 0; text-align: right; color: #000000; font-size: 20px; font-weight: bold;">${amount.toFixed(2)} ${currency}</td>
+              <td style="padding: 12px 0; text-align: right; color: #0066CC; font-size: 20px; font-weight: bold;">${amount.toFixed(2)} ${currency}</td>
             </tr>
             <tr>
               <td style="padding: 8px 0; color: #666;"><strong>Transaction ID:</strong></td>
@@ -452,21 +509,21 @@ function buildAdminOTPEmail({ name, otp, verificationLink }: any) {
   const text = `Hi ${name},\n\nWelcome to SPANA Admin! Your account has been created.\n\nYour 6-digit OTP for admin login is: ${otp}\n\nThis OTP expires in 5 hours.\n\n${verificationLink ? `Or click this link to verify and see your OTP: ${verificationLink}\n\n` : ''}If you didn't request this, please contact support immediately.\n\nThanks,\nThe Spana Team`;
   const html = `
     <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background-color: #ffffff;">
-      <div style="background: #000000; padding: 30px; text-align: center; border-radius: 10px 10px 0 0;">
+      <div style="background: #0066CC; padding: 30px; text-align: center; border-radius: 10px 10px 0 0;">
         <h1 style="color: #ffffff; margin: 0; font-size: 28px;">Welcome to SPANA Admin!</h1>
       </div>
-      <div style="background: #ffffff; padding: 30px; border: 1px solid #e0e0e0; border-radius: 0 0 10px 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
+      <div style="background: #F5F5F5; padding: 30px; border: 1px solid #e0e0e0; border-radius: 0 0 10px 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
         <h2 style="color: #000000; margin-top: 0;">Hello ${name}!</h2>
         <p style="color: #333333; line-height: 1.6; font-size: 16px;">
           Your admin account has been created! Use the OTP below to complete your login.
         </p>
-        <div style="background: #f5f5f5; border: 2px dashed #000000; padding: 20px; text-align: center; margin: 30px 0; border-radius: 8px;">
+        <div style="background: #ffffff; border: 2px solid #0066CC; padding: 20px; text-align: center; margin: 30px 0; border-radius: 8px;">
           <p style="color: #666666; font-size: 14px; margin: 0 0 10px 0;">Your 6-digit OTP:</p>
-          <p style="color: #000000; font-size: 36px; font-weight: bold; letter-spacing: 8px; margin: 0; font-family: 'Courier New', monospace;">${otp}</p>
+          <p style="color: #0066CC; font-size: 36px; font-weight: bold; letter-spacing: 8px; margin: 0; font-family: 'Courier New', monospace;">${otp}</p>
         </div>
         ${verificationLink ? `
         <div style="text-align: center; margin: 30px 0;">
-          <a href="${verificationLink}" style="display: inline-block; background: #000000; color: #ffffff; padding: 15px 30px; text-decoration: none; border-radius: 4px; font-weight: bold; font-size: 16px;">
+          <a href="${verificationLink}" style="display: inline-block; background: #0066CC; color: #ffffff; padding: 15px 30px; text-decoration: none; border-radius: 4px; font-weight: bold; font-size: 16px;">
             Click here to verify & see your OTP
           </a>
         </div>
@@ -487,6 +544,18 @@ function buildAdminOTPEmail({ name, otp, verificationLink }: any) {
 }
 
 async function sendAdminOTPEmail({ to, name, otp, verificationLink }: any) {
+  if (USE_EMAIL_SERVICE && emailService.isEmailServiceEnabled()) {
+    try {
+      return await emailService.sendOTPEmailViaService({
+        to,
+        name: name || to.split('@')[0],
+        otp
+      });
+    } catch (error: any) {
+      console.error('[Mailer] Email service failed, falling back to SMTP:', error.message);
+      // Fall back to SMTP if email service fails
+    }
+  }
   const { subject, text, html } = buildAdminOTPEmail({ name, otp, verificationLink });
   return sendMailWithRetry({ to, subject, text, html });
 }

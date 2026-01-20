@@ -1,4 +1,5 @@
 import prisma from '../lib/database';
+import { generateUserReferenceAsync } from '../lib/idGenerator';
 // import { syncUserToMongo } from '../lib/mongoSync';
 const jwt = require('jsonwebtoken');
 const { validationResult } = require('express-validator');
@@ -85,10 +86,14 @@ exports.register = async (req: any, res: any) => {
 
     // Create new user
     console.log('Creating user with data:', userData);
+    const referenceNumber = await generateUserReferenceAsync();
     const user = await prisma.user.create({
-      data: userData
+      data: {
+        ...userData,
+        referenceNumber // SPN-USR-000001
+      }
     });
-    console.log('User created:', user.id);
+    console.log('User created:', user.id, 'Reference:', referenceNumber);
 
     // Create role-specific record
     if (finalRole === 'customer') {

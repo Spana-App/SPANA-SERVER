@@ -16,6 +16,7 @@ datasource db {
 // Base User model with common fields
 model User {
   id                String   @id @default(cuid())
+  referenceNumber   String?  @unique // SPN-USR-000001
   email             String   @unique
   password          String
   firstName         String
@@ -152,6 +153,7 @@ model Service {
 
 model Booking {
   id                     String   @id @default(cuid())
+  referenceNumber        String?  @unique // SPANA-BK-000001
   date                   DateTime
   time                   String
   location               Json?    // { type: "Point", coordinates: [lng, lat], address: string }
@@ -231,6 +233,7 @@ model Booking {
 
 model Payment {
   id            String   @id @default(cuid())
+  referenceNumber String? @unique // SPANA-PY-000001
   amount        Float
   currency      String   @default("ZAR")
   paymentMethod String   // 'payfast', 'wallet', 'mobile_money'
@@ -333,9 +336,10 @@ model ServiceWorkflow {
 }
 
 model Message {
-  id        String   @id @default(cuid())
-  content   String
-  senderId  String
+  id            String   @id @default(cuid())
+  referenceNumber String? @unique // SPN-MSG-000001
+  content       String
+  senderId      String
   receiverId String? // Null for booking chat or admin chat
   bookingId String?  // For booking-related chat
   chatType  String   @default("direct") // 'booking', 'direct', 'admin' (provider-admin only)
@@ -546,4 +550,13 @@ model ProviderPayout {
   updatedAt     DateTime @updatedAt
   
   @@map("provider_payouts")
+}
+
+// Sequence table for generating unique reference numbers
+model Sequence {
+  type        String   @id // 'booking', 'payment', 'user', 'message', 'service'
+  counter     Int      @default(1)
+  updatedAt   DateTime @updatedAt
+  
+  @@map("sequences")
 }

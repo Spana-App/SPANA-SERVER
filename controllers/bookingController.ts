@@ -1,5 +1,6 @@
 import prisma from '../lib/database';
 import { getBestAvailableProvider, getLocationMultiplier } from '../lib/providerMatching';
+import { generateBookingReferenceAsync } from '../lib/idGenerator';
 // import { syncBookingToMongo } from '../lib/mongoSync';
 
 // Create a new booking REQUEST (Uber-style) - Automatic provider matching
@@ -181,8 +182,10 @@ exports.createBooking = async (req: any, res: any) => {
     // Create booking request - Customer must pay first before provider allocation
     // Status: pending_payment (waiting for payment)
     // Date is set to current time for immediate service
+    const referenceNumber = await generateBookingReferenceAsync();
     const booking = await prisma.booking.create({
       data: {
+        referenceNumber, // SPANA-BK-000001
         customerId: customer.id,
         serviceId: service.id,
         date: bookingDateTime, // Use validated date/time
@@ -1423,14 +1426,24 @@ async function releaseEscrowFunds(paymentId: string, bookingId: string) {
 
     if (!payment || payment.escrowStatus !== 'held') return;
 
-    // Calculate payout (tip goes 100% to provider, commission only on base amount)
+    // Get SLA penalty from booking
+    const booking = await prisma.booking.findUnique({
+      where: { id: bookingId },
+      select: { slaPenaltyAmount: true }
+    });
+    const slaPenaltyAmount = booking?.slaPenaltyAmount || 0;
+
+    // Calculate payout (tip goes 100% to provider, commission only on base amount, SLA penalty deducted)
     const commissionRate = payment.commissionRate || 0.15;
     const tipAmount = payment.tipAmount || 0;
     const baseAmount = payment.amount - tipAmount;
     const commissionAmount = baseAmount * commissionRate; // Commission only on service, not tip
-    const providerPayout = payment.amount - commissionAmount; // Provider gets base - commission + full tip
+    
+    // Deduct both commission AND SLA penalty from provider payout
+    // Ensure provider payout never goes negative (minimum R0)
+    const providerPayout = Math.max(0, payment.amount - commissionAmount - slaPenaltyAmount);
 
-    // Update payment
+    // Update payment (include SLA penalty for tracking)
     await prisma.payment.update({
       where: { id: paymentId },
       data: {
@@ -1438,16 +1451,18 @@ async function releaseEscrowFunds(paymentId: string, bookingId: string) {
         commissionAmount,
         providerPayout,
         status: 'completed'
+        // Note: SLA penalty stored in booking.slaPenaltyAmount, not payment
       }
     });
 
-    // Update booking
+    // Update booking (include SLA penalty in payout amount)
     await prisma.booking.update({
       where: { id: bookingId },
       data: {
         paymentStatus: 'released_to_provider',
         commissionAmount,
         providerPayoutAmount: providerPayout
+        // slaPenaltyAmount already stored in booking
       }
     });
 
@@ -1484,6 +1499,7 @@ async function releaseEscrowFunds(paymentId: string, bookingId: string) {
         totalHeld: { decrement: payment.amount },
         totalReleased: { increment: providerPayout },
         totalCommission: { increment: commissionAmount }
+        // Note: SLA penalty stays in escrow (customer compensation), not added to platform revenue
       }
     });
 
@@ -1494,7 +1510,7 @@ async function releaseEscrowFunds(paymentId: string, bookingId: string) {
         amount: providerPayout,
         bookingId,
         paymentId,
-        description: `Released to provider after service completion`
+        description: `Released to provider after service completion${slaPenaltyAmount > 0 ? ` (SLA penalty: R${slaPenaltyAmount.toFixed(2)} deducted)` : ''}`
       }
     });
 
@@ -1508,6 +1524,20 @@ async function releaseEscrowFunds(paymentId: string, bookingId: string) {
         description: `Commission earned`
       }
     });
+
+    // Create transaction record for SLA penalty (if applicable)
+    if (slaPenaltyAmount > 0) {
+      await prisma.walletTransaction.create({
+        data: {
+          walletId: wallet.id,
+          type: 'sla_penalty',
+          amount: slaPenaltyAmount,
+          bookingId,
+          paymentId,
+          description: `SLA penalty deducted from provider (held for customer compensation)`
+        }
+      });
+    }
   } catch (error) {
     console.error('Error releasing escrow funds:', error);
   }

@@ -293,16 +293,19 @@ async function testEndToEnd() {
     // 4.1 Create Booking (same-day only)
     log('  ✓', '4.1 Creating booking (same-day, immediate)...', colors.yellow);
     const now = new Date();
-    const futureTime = new Date(now.getTime() + 60 * 60 * 1000); // 1 hour from now
-    const bookingDate = new Date(futureTime);
-    bookingDate.setMinutes(0, 0, 0);
+    // Ensure booking is today (add 30 minutes, but make sure it's still today)
+    const bookingDateTime = new Date(now.getTime() + 30 * 60 * 1000); // 30 minutes from now
+    const todayEnd = new Date(now);
+    todayEnd.setHours(23, 59, 59, 999);
+    const bookingDate = bookingDateTime <= todayEnd ? bookingDateTime : new Date(now.getTime() + 5 * 60 * 1000); // Fallback to 5 minutes if too late
+    bookingDate.setSeconds(0, 0); // Round seconds
 
     const bookingResponse = await axios.post(
       `${BASE_URL}/bookings`,
       {
         serviceId,
         date: bookingDate.toISOString(),
-        time: `${bookingDate.getHours().toString().padStart(2, '0')}:00`,
+        time: `${bookingDate.getHours().toString().padStart(2, '0')}:${bookingDate.getMinutes().toString().padStart(2, '0')}`,
         location: {
           type: 'Point',
           coordinates: [28.0473, -26.2041],

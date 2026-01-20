@@ -1,4 +1,5 @@
 import prisma from '../lib/database';
+import { generatePaymentReferenceAsync } from '../lib/idGenerator';
 const { sendReceiptEmail } = require('../config/mailer');
 const workflowClient = require('../lib/workflowClient');
 const crypto = require('crypto');
@@ -69,8 +70,10 @@ exports.createPaymentIntent = async (req, res) => {
       return res.status(400).json({ message: 'Customer profile not found' });
     }
 
+    const referenceNumber = await generatePaymentReferenceAsync();
     const payment = await prisma.payment.create({
       data: {
+        referenceNumber, // SPANA-PY-000001
         customerId: customer.id,
         bookingId,
         amount: totalAmount, // Total includes tip
@@ -569,12 +572,18 @@ exports.releaseFunds = async (req, res) => {
       return res.status(400).json({ message: 'Funds already released or not in escrow' });
     }
 
-    // Release escrow funds (tip goes 100% to provider, commission only on base amount)
+    // Get SLA penalty from booking
+    const slaPenaltyAmount = booking.slaPenaltyAmount || 0;
+
+    // Release escrow funds (tip goes 100% to provider, commission only on base amount, SLA penalty deducted)
     const commissionRate = booking.payment.commissionRate || 0.15;
     const tipAmount = booking.payment.tipAmount || 0;
     const baseAmount = booking.payment.amount - tipAmount;
     const commissionAmount = baseAmount * commissionRate; // Commission only on service, not tip
-    const providerPayout = booking.payment.amount - commissionAmount; // Provider gets base - commission + full tip
+    
+    // Deduct both commission AND SLA penalty from provider payout
+    // Ensure provider payout never goes negative (minimum R0)
+    const providerPayout = Math.max(0, booking.payment.amount - commissionAmount - slaPenaltyAmount);
 
     await prisma.payment.update({
       where: { id: booking.payment.id },
@@ -623,6 +632,7 @@ exports.releaseFunds = async (req, res) => {
         totalHeld: { decrement: booking.payment.amount },
         totalReleased: { increment: providerPayout },
         totalCommission: { increment: commissionAmount }
+        // Note: SLA penalty stays in escrow (customer compensation), not added to platform revenue
       }
     });
 
@@ -633,7 +643,7 @@ exports.releaseFunds = async (req, res) => {
         amount: providerPayout,
         bookingId,
         paymentId: booking.payment.id,
-        description: `Released to provider after service completion`
+        description: `Released to provider after service completion${slaPenaltyAmount > 0 ? ` (SLA penalty: R${slaPenaltyAmount.toFixed(2)} deducted)` : ''}`
       }
     });
 
@@ -647,6 +657,20 @@ exports.releaseFunds = async (req, res) => {
         description: `Commission earned`
       }
     });
+
+    // Create transaction record for SLA penalty (if applicable)
+    if (slaPenaltyAmount > 0) {
+      await prisma.walletTransaction.create({
+        data: {
+          walletId: wallet.id,
+          type: 'sla_penalty',
+          amount: slaPenaltyAmount,
+          bookingId,
+          paymentId: booking.payment.id,
+          description: `SLA penalty deducted from provider (held for customer compensation)`
+        }
+      });
+    }
 
     res.json({ message: 'Funds released to provider successfully' });
   } catch (error) {
@@ -788,8 +812,10 @@ exports.confirmPayment = async (req, res) => {
     const commissionAmount = totalAmount * commissionRate;
     const providerPayout = totalAmount - commissionAmount;
 
+    const referenceNumber = await generatePaymentReferenceAsync();
     const payment = await prisma.payment.create({
       data: {
+        referenceNumber, // SPANA-PY-000001
         customerId: customer.id,
         bookingId,
         amount: totalAmount,
@@ -1028,8 +1054,10 @@ exports.webhookHandler = async (req: any, res: any) => {
               });
 
               if (customer) {
+                const referenceNumber = await generatePaymentReferenceAsync();
                 payment = await prisma.payment.create({
                   data: {
+                    referenceNumber, // SPANA-PY-000001
                     customerId: customer.id,
                     bookingId,
                     amount: (pi.amount && pi.amount / 100) || 0,

@@ -202,8 +202,11 @@ exports.sendMessage = async (req: any, res: any) => {
     }
 
     // Create message
+    const { generateMessageReferenceAsync } = require('../lib/idGenerator');
+    const referenceNumber = await generateMessageReferenceAsync();
     const message = await prisma.message.create({
       data: {
+        referenceNumber, // SPN-MSG-000001
         senderId: currentUser.id,
         receiverId: receiverId || null,
         bookingId: bookingId || null,
