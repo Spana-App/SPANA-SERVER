@@ -302,13 +302,25 @@ exports.completeRegistration = async (req: any, res: any) => {
                   <button type="button" onclick="addSkill()" style="background: #0066CC; color: white; border: none; padding: 12px 20px; border-radius: 5px; cursor: pointer;">Add</button>
                 </div>
               </div>
-              <input type="hidden" name="token" value="${token}">
-              <input type="hidden" name="uid" value="${uid}">
+              <input type="hidden" name="token" id="tokenInput" value="${token}">
+              <input type="hidden" name="uid" id="uidInput" value="${uid}">
               <button type="submit" class="btn">Complete Profile</button>
             </form>
           </div>
         </div>
         <script>
+          // Get token and uid from URL params if not in hidden fields
+          const urlParams = new URLSearchParams(window.location.search);
+          const tokenFromUrl = urlParams.get('token');
+          const uidFromUrl = urlParams.get('uid');
+          
+          if (tokenFromUrl) {
+            document.getElementById('tokenInput').value = tokenFromUrl;
+          }
+          if (uidFromUrl) {
+            document.getElementById('uidInput').value = uidFromUrl;
+          }
+          
           let skills = ${JSON.stringify(provider.skills || [])};
           
           function addSkill() {
@@ -345,18 +357,32 @@ exports.completeRegistration = async (req: any, res: any) => {
           
           document.getElementById('profileForm').addEventListener('submit', async function(e) {
             e.preventDefault();
-            const formData = new FormData(e.target);
+            const form = e.target;
+            const formData = new FormData(form);
+            
+            // Validate required fields
+            const firstName = formData.get('firstName')?.toString().trim();
+            const lastName = formData.get('lastName')?.toString().trim();
+            const phone = formData.get('phone')?.toString().trim();
+            
+            if (!firstName || !lastName || !phone) {
+              const messageEl = document.getElementById('message');
+              messageEl.classList.add('show', 'error');
+              messageEl.textContent = 'Please fill in all required fields (First Name, Last Name, Phone Number).';
+              return;
+            }
+            
             const data = {
-              firstName: formData.get('firstName'),
-              lastName: formData.get('lastName'),
-              phone: formData.get('phone'),
-              experienceYears: parseInt(formData.get('experienceYears')),
+              firstName: firstName,
+              lastName: lastName,
+              phone: phone,
+              experienceYears: parseInt(formData.get('experienceYears')?.toString() || '0'),
               skills: skills,
-              token: formData.get('token'),
-              uid: formData.get('uid')
+              token: formData.get('token')?.toString(),
+              uid: formData.get('uid')?.toString()
             };
             
-            const btn = e.target.querySelector('button[type="submit"]');
+            const btn = form.querySelector('button[type="submit"]');
             btn.disabled = true;
             btn.textContent = 'Saving...';
             
@@ -377,7 +403,7 @@ exports.completeRegistration = async (req: any, res: any) => {
                 messageEl.textContent = result.message || 'Profile completed successfully! You can now start receiving bookings.';
                 btn.textContent = 'Profile Completed ✓';
                 setTimeout(() => {
-                  window.location.href = '/complete-registration?success=true&token=' + data.token + '&uid=' + data.uid;
+                  window.location.href = '/complete-registration?success=true&token=' + encodeURIComponent(data.token) + '&uid=' + encodeURIComponent(data.uid);
                 }, 2000);
               } else {
                 messageEl.classList.add('show', 'error');
@@ -386,12 +412,14 @@ exports.completeRegistration = async (req: any, res: any) => {
                 btn.textContent = 'Complete Profile';
               }
             } catch (error) {
+              console.error('Form submission error:', error);
               messageEl.classList.add('show', 'error');
-              messageEl.textContent = 'An error occurred. Please try again.';
+              messageEl.textContent = 'An error occurred. Please check your connection and try again.';
               btn.disabled = false;
               btn.textContent = 'Complete Profile';
             }
           });
+          
         </script>
       </body>
       </html>
