@@ -230,8 +230,21 @@ exports.register = async (req: any, res: any) => {
       }
 
       // Send welcome email - only if requested
+      // For providers, include verification token and uid so the "Complete Profile" button works
       try {
-        sendWelcomeEmail(user).catch(() => {});
+        if (user.role === 'service_provider') {
+          const provider = await prisma.serviceProvider.findUnique({
+            where: { userId: user.id }
+          });
+          if (provider?.verificationToken) {
+            // Pass token and uid to welcome email for provider
+            sendWelcomeEmail(user, { token: provider.verificationToken, uid: user.id }).catch(() => {});
+          } else {
+            sendWelcomeEmail(user).catch(() => {});
+          }
+        } else {
+          sendWelcomeEmail(user).catch(() => {});
+        }
       } catch (_) {}
     }
 

@@ -259,13 +259,15 @@ function buildWelcomeEmail({ firstName, lastName }: any) {
   return { subject, text, html };
 }
 
-async function sendWelcomeEmail(user: any) {
+async function sendWelcomeEmail(user: any, options?: { token?: string; uid?: string }) {
   if (USE_EMAIL_SERVICE && emailService.isEmailServiceEnabled()) {
     try {
       return await emailService.sendWelcomeEmailViaService({
         to: user.email,
         name: `${user.firstName || ''} ${user.lastName || ''}`.trim() || user.email.split('@')[0],
-        role: user.role || 'customer'
+        role: user.role || 'customer',
+        token: options?.token,
+        uid: options?.uid
       });
     } catch (error: any) {
       console.error('[Mailer] Email service failed, falling back to SMTP:', error.message);

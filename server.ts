@@ -508,6 +508,7 @@ app.use('/complaints', require('./routes/complaints'));
 app.use('/stats', require('./routes/stats'));
 app.use('/chat', chatRoutes);
 app.use('/provider', providerRoutes);
+app.use('/', require('./routes/registration'));
 
 // Health check endpoint with Redis status
 app.get('/health', async (req: any, res: any) => {

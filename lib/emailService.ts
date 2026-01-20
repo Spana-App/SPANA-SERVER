@@ -34,6 +34,8 @@ interface WelcomeEmailOptions {
   to: string;
   name: string;
   role: string;
+  token?: string;
+  uid?: string;
 }
 
 /**
@@ -159,6 +161,8 @@ export async function sendWelcomeEmailViaService(options: WelcomeEmailOptions): 
       to: options.to,
       name: options.name,
       role: options.role,
+      token: options.token,
+      uid: options.uid,
       apiSecret: EMAIL_SERVICE_SECRET
     }, {
       timeout: 30000,
