@@ -184,7 +184,18 @@ exports.register = async (req: any, res: any) => {
               verificationExpires: new Date(Date.now() + 24 * 60 * 60 * 1000)
             }
           });
-          const verificationLink = `${process.env.CLIENT_URL}/verify-provider?token=${verificationToken}&uid=${user.id}`;
+
+          // Build verification link using Render backend URL (preferred) with safe fallbacks
+          let baseUrl = process.env.CLIENT_URL || process.env.EXTERNAL_API_URL;
+
+          // If CLIENT_URL/EXTERNAL_API_URL are not set or invalid, fall back to Render URL
+          if (!baseUrl || baseUrl === '*' || !baseUrl.startsWith('http')) {
+            baseUrl = 'https://spana-server-5bhu.onrender.com';
+          }
+
+          const cleanBaseUrl = baseUrl.replace(/\/$/, '');
+          const verificationLink = `${cleanBaseUrl}/verify-provider?token=${verificationToken}&uid=${user.id}`;
+
           sendVerificationEmail(user, verificationLink).catch(() => {});
         } catch (_) {}
       } else if (user.role === 'admin' && isSpanaAdminEmail(user.email)) {
