@@ -7,6 +7,11 @@ const crypto = require('crypto');
 const resetRequestCache = new Map<string, number>();
 const RESET_COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes between requests
 
+// Blocklist: Emails that should never receive password reset emails
+const PASSWORD_RESET_BLOCKLIST = [
+  'xolinxiweni@gmail.com'
+].map(email => email.toLowerCase());
+
 // Generate password reset token
 const generateResetToken = () => {
   return crypto.randomBytes(32).toString('hex');
@@ -22,6 +27,16 @@ exports.requestPasswordReset = async (req: any, res: any) => {
     }
 
     const emailLower = email.toLowerCase();
+
+    // Blocklist: Prevent password reset emails for specific addresses
+    if (PASSWORD_RESET_BLOCKLIST.includes(emailLower)) {
+      console.log(`[Password Reset] Blocked request for ${emailLower} (blocklisted)`);
+      return res.json({
+        message: 'If an account exists with this email, a password reset link has been sent.',
+        expiresIn: '1 hour'
+        // Don't reveal that it's blocked (security best practice)
+      });
+    }
 
     // Rate limiting: Prevent spam from test scripts or repeated requests
     if (emailLower.includes('@test.com') || emailLower.includes('test-')) {
