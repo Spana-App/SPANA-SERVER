@@ -35,15 +35,19 @@ function getTransporter() {
   
   // Render free tier blocks ports 25, 587, 465 - try alternative ports
   // Common alternatives: 2525, 8025, 2587
+  // Only show Render-specific port hints when explicitly enabled
+  const showSmtpHints = String(process.env.SMTP_SHOW_HINTS || '').toLowerCase() === 'true';
   if (isRender && (port === 587 || port === 465 || port === 25)) {
     // Try alternative port if configured
     if (process.env.SMTP_ALT_PORT) {
       const altPort = parseInt(process.env.SMTP_ALT_PORT, 10);
       if (altPort && altPort !== port) {
-        console.log(`[SMTP] Render detected - using alternative port ${altPort} instead of ${port}`);
+        if (showSmtpHints) {
+          console.log(`[SMTP] Render detected - using alternative port ${altPort} instead of ${port}`);
+        }
         port = altPort;
       }
-    } else {
+    } else if (showSmtpHints) {
       // Auto-try common alternative ports for Render
       console.log(`[SMTP] Render detected - port ${port} may be blocked. Consider using SMTP_ALT_PORT=2525 or upgrade to paid plan.`);
     }
@@ -189,10 +193,13 @@ async function sendMail({ to, subject, text, html, from, attachments }: any) {
     if (html) mailOptions.html = html;
     if (attachments) mailOptions.attachments = attachments;
     
-    console.log(`[SMTP] Attempting to send email to ${to} via ${process.env.SMTP_HOST}:${process.env.SMTP_PORT}`);
-    console.log(`[SMTP] Environment: ${process.env.NODE_ENV || 'development'}`);
-    console.log(`[SMTP] Host: ${process.env.SMTP_HOST}`);
-    console.log(`[SMTP] Port: ${process.env.SMTP_PORT}`);
+    const verboseSmtpLogging = String(process.env.SMTP_DEBUG || '').toLowerCase() === 'true';
+    if (verboseSmtpLogging) {
+      console.log(`[SMTP] Attempting to send email to ${to} via ${process.env.SMTP_HOST}:${process.env.SMTP_PORT}`);
+      console.log(`[SMTP] Environment: ${process.env.NODE_ENV || 'development'}`);
+      console.log(`[SMTP] Host: ${process.env.SMTP_HOST}`);
+      console.log(`[SMTP] Port: ${process.env.SMTP_PORT}`);
+    }
     
     // Skip verification for faster sending - retry logic will handle connection issues
     const result = await transporter.sendMail(mailOptions);
@@ -211,10 +218,21 @@ async function sendMail({ to, subject, text, html, from, attachments }: any) {
       stack: error.stack
     };
     
-    console.error('[SMTP Error] Failed to send email:', errorDetails);
+    const verboseSmtpLogging = String(process.env.SMTP_DEBUG || '').toLowerCase() === 'true';
+    if (verboseSmtpLogging) {
+      console.error('[SMTP Error] Failed to send email:', errorDetails);
+    } else {
+      console.error('[SMTP Error] Failed to send email:', {
+        to,
+        subject,
+        code: error.code,
+        message: error.message
+      });
+    }
     
-    // Check for common Render/cloud platform issues
-    if (error.code === 'ECONNREFUSED' || error.code === 'ETIMEDOUT' || error.code === 'ENOTFOUND') {
+    // Optional Render/cloud hints (very noisy, disabled by default)
+    const showSmtpHints = String(process.env.SMTP_SHOW_HINTS || '').toLowerCase() === 'true';
+    if (showSmtpHints && (error.code === 'ECONNREFUSED' || error.code === 'ETIMEDOUT' || error.code === 'ENOTFOUND')) {
       console.error('[SMTP] ⚠️  Connection issue detected. This is common on cloud platforms like Render.');
       console.error('[SMTP] 💡 Solutions for SMTP on Render:');
       console.error('[SMTP]   1. Upgrade to Render paid plan (allows SMTP ports 25, 465, 587)');
