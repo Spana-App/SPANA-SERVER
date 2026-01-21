@@ -10,7 +10,7 @@ const { promisify } = require('util');
 const os = require('os');
 // DNS lookup removed - not needed and causes memory issues
 // const dns = require('dns').promises;
-const { verifySmtp } = require('./config/mailer');
+const emailService = require('./lib/emailService');
 
 // Import routes
 const authRoutes = require('./routes/auth');
@@ -591,26 +591,22 @@ app.get('/health/detailed', async (req: any, res: any) => {
     console.log(chalk.green('✅  Detailed health check passed'));
   }
 
-  // SMTP
-  // SMTP / Mail provider
-  const mailProvider = (process.env.MAIL_PROVIDER || 'smtp').toLowerCase();
-  const mailEnabled = String(process.env.MAIL_ENABLED || 'true').toLowerCase() === 'true';
-  if (!mailEnabled || mailProvider === 'none' || mailProvider === 'disabled') {
-    healthCheck.smtp = 'disabled';
-  } else {
-    try {
-      const smtp = await verifySmtp();
-      healthCheck.smtp = smtp.ok ? 'connected' : 'disconnected';
-      if (!smtp.ok) {
-        healthCheck.smtpError = smtp.error;
-        if (healthCheck.status === 'OK') healthCheck.status = 'DEGRADED';
-        console.log(chalk.red('❌  SMTP verify failed:'), smtp.error);
+  // Email service health (Vercel microservice)
+  try {
+    const isServiceEnabled = emailService.isEmailServiceEnabled && emailService.isEmailServiceEnabled();
+    if (!isServiceEnabled) {
+      healthCheck.emailService = 'disabled';
+    } else {
+      const healthy = await emailService.checkEmailServiceHealth();
+      healthCheck.emailService = healthy ? 'healthy' : 'unhealthy';
+      if (!healthy && healthCheck.status === 'OK') {
+        healthCheck.status = 'DEGRADED';
       }
-    } catch (e: any) {
-      healthCheck.smtp = 'disconnected';
-      healthCheck.smtpError = e && e.message ? e.message : String(e);
-      if (healthCheck.status === 'OK') healthCheck.status = 'DEGRADED';
-      console.log(chalk.red('❌  SMTP verify failed:'), healthCheck.smtpError);
+    }
+  } catch (e: any) {
+    healthCheck.emailService = 'unhealthy';
+    if (healthCheck.status === 'OK') {
+      healthCheck.status = 'DEGRADED';
     }
   }
   
@@ -670,17 +666,23 @@ if (require.main === module) {
           console.log(' Load avg:      ', load.map(n => n.toFixed(2)).join(', '));
           console.log(' Routes:        ', ['/auth','/users','/services','/bookings','/payments','/notifications','/activities','/uploads','/email-verification'].join(' '));
 
-          const mailProvider = (process.env.MAIL_PROVIDER || 'smtp').toLowerCase();
-          const mailEnabled = String(process.env.MAIL_ENABLED || 'true').toLowerCase() === 'true';
-          if (!mailEnabled || mailProvider === 'none' || mailProvider === 'disabled') {
-            console.log(' SMTP:          ', 'disabled');
-          } else {
-            // SMTP verification is slow - do it async without blocking
-            require('./config/mailer').verifySmtp().then((smtp: any) => {
-              console.log(' SMTP:          ', smtp.ok ? chalk.green(`connected (${mailProvider})`) : chalk.yellow(`checking...`));
-            }).catch(() => {
-              console.log(' SMTP:          ', chalk.yellow('checking...'));
-            });
+          // Email service diagnostics (microservice on Vercel)
+          try {
+            const isServiceEnabled = emailService.isEmailServiceEnabled && emailService.isEmailServiceEnabled();
+            if (!isServiceEnabled) {
+              console.log(' Email Service: ', 'disabled');
+            } else {
+              // Non-blocking health check
+              emailService.checkEmailServiceHealth()
+                .then((healthy: boolean) => {
+                  console.log(' Email Service: ', healthy ? chalk.green('healthy') : chalk.yellow('unhealthy'));
+                })
+                .catch(() => {
+                  console.log(' Email Service: ', chalk.yellow('unhealthy'));
+                });
+            }
+          } catch {
+            console.log(' Email Service: ', chalk.yellow('unhealthy'));
           }
 
           // Skip DNS lookup - it's slow and not critical for startup

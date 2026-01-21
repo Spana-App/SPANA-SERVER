@@ -267,128 +267,35 @@ exports.register = async (req: any, res: any) => {
 // Login user
 exports.login = async (req: any, res: any) => {
   try {
-    const { email } = req.body;
+    const { email, password } = req.body;
 
-    // Admin login only requires email (password-less for @spana.co.za)
-    if (!isSpanaAdminEmail(email)) {
-      // Regular user login requires password
-      const { password } = req.body;
-      if (!password) {
-        return res.status(400).json({ message: 'Password is required' });
-      }
-
-      let user = await prisma.user.findUnique({ 
-        where: { email: email.toLowerCase() },
-        include: { customer: true, serviceProvider: true }
-      });
-
-      if (!user) {
-        return res.status(400).json({ message: 'Invalid credentials' });
-      }
-
-      // Check password
-      const isMatch = await bcrypt.compare(password, user.password);
-      if (!isMatch) {
-        return res.status(400).json({ message: 'Invalid credentials' });
-      }
-
-      // Generate token for non-admin users (7 days expiry)
-      const token = generateToken(user.id);
-
-      // Log activity and update lastLoginAt
-      try {
-        await prisma.activity.create({ 
-          data: { 
-            userId: user.id, 
-            actionType: 'login' 
-          } 
-        });
-      } catch (_) {}
-      try {
-        await prisma.user.update({
-          where: { id: user.id },
-          data: { lastLoginAt: new Date() }
-        });
-      } catch (_) {}
-
-      // Build user response based on role
-      let userResponse: any;
-      if (user.role === 'customer' && user.customer) {
-        const { id, email, firstName, lastName, phone, role, isEmailVerified, isPhoneVerified, profileImage, location, walletBalance, status, createdAt, updatedAt } = user;
-        userResponse = {
-          _id: id, email, firstName, lastName, phone, role, isEmailVerified, isPhoneVerified, 
-          profileImage, location, walletBalance, status, createdAt, updatedAt, __v: 0
-        };
-      } else if (user.role === 'service_provider' && user.serviceProvider) {
-        const { id, email, firstName, lastName, phone, role, isEmailVerified, isPhoneVerified, profileImage, location, walletBalance, status, createdAt, updatedAt } = user;
-        userResponse = {
-          _id: id, email, firstName, lastName, phone, role, isEmailVerified, isPhoneVerified, 
-          profileImage, location, walletBalance, status, createdAt, updatedAt, __v: 0
-        };
-      } else {
-        userResponse = {
-          _id: user.id, email: user.email, firstName: user.firstName, lastName: user.lastName, 
-          phone: user.phone, role: user.role, isEmailVerified: user.isEmailVerified, 
-          isPhoneVerified: user.isPhoneVerified, profileImage: user.profileImage, location: user.location, 
-          walletBalance: user.walletBalance, status: user.status, createdAt: user.createdAt, 
-          updatedAt: user.updatedAt, __v: 0
-        };
-      }
-
-      return res.status(200).json({
-        message: 'Login successful',
-        token,
-        user: userResponse
-      });
+    if (!email) {
+      return res.status(400).json({ message: 'Email is required' });
     }
 
-    // Admin login flow (email-only for @spana.co.za)
-    let user = await prisma.user.findUnique({ 
+    if (!password) {
+      return res.status(400).json({ message: 'Password is required' });
+    }
+
+    // Look up user by email
+    let user = await prisma.user.findUnique({
       where: { email: email.toLowerCase() },
       include: { customer: true, serviceProvider: true }
     });
 
-    // Auto-register admin silently if doesn't exist
-    if (!user && isSpanaAdminEmail(email)) {
-      const firstName = extractFirstNameFromEmail(email);
-      const tempPassword = nodeCrypto.randomBytes(32).toString('hex'); // Random password, not used
-      const hashedPassword = await bcrypt.hash(tempPassword, 12);
-      
-      user = await prisma.user.create({
-        data: {
-          email: email.toLowerCase(),
-          password: hashedPassword, // Random password, admin uses OTP only
-          firstName,
-          lastName: '',
-          phone: '',
-          role: 'admin',
-          isEmailVerified: false
-        },
-        include: { customer: true, serviceProvider: true }
-      });
-
-      // Create admin verification record
-      try {
-        await prisma.adminVerification.create({
-          data: {
-            adminEmail: email.toLowerCase(),
-            verified: false
-          }
-        });
-      } catch (err) {
-        console.error('Error creating admin verification record:', err);
-      }
+    if (!user) {
+      return res.status(400).json({ message: 'Invalid credentials' });
     }
 
     // Auto-correct role for existing users with @spana.co.za email
-    if (user && isSpanaAdminEmail(email) && user.role !== 'admin') {
+    if (isSpanaAdminEmail(email) && user.role !== 'admin') {
       console.log(`Auto-correcting role for ${email} from ${user.role} to admin`);
       user = await prisma.user.update({
         where: { id: user.id },
         data: { role: 'admin' },
         include: { customer: true, serviceProvider: true }
       });
-      
+
       // Ensure admin verification record exists
       try {
         await prisma.adminVerification.upsert({
@@ -404,11 +311,13 @@ exports.login = async (req: any, res: any) => {
       }
     }
 
-    if (!user) {
-      return res.status(400).json({ message: 'Invalid email address' });
+    // Check password for ALL users (including admins)
+    const isMatch = await bcrypt.compare(password, user.password);
+    if (!isMatch) {
+      return res.status(400).json({ message: 'Invalid credentials' });
     }
 
-    // For admin users, automatically generate and send OTP
+    // Admin login flow: require correct password + OTP for @spana.co.za
     if (user.role === 'admin' && isSpanaAdminEmail(user.email)) {
       const { sendAdminOTPEmail } = require('../config/mailer');
       

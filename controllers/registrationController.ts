@@ -302,6 +302,9 @@ exports.completeRegistration = async (req: any, res: any) => {
                   <button type="button" onclick="addSkill()" style="background: #0066CC; color: white; border: none; padding: 12px 20px; border-radius: 5px; cursor: pointer;">Add</button>
                 </div>
               </div>
+              <p style="color: #666; font-size: 14px; margin-top: 20px; padding: 15px; background: #f0f0f0; border-radius: 5px;">
+                <strong>Next Steps:</strong> After completing your profile, you'll be able to log into the SPANA app dashboard where you can upload verification documents (ID, license, certifications) for review.
+              </p>
               <input type="hidden" name="token" id="tokenInput" value="${token}">
               <input type="hidden" name="uid" id="uidInput" value="${uid}">
               <button type="submit" class="btn">Complete Profile</button>
@@ -400,7 +403,7 @@ exports.completeRegistration = async (req: any, res: any) => {
               
               if (response.ok) {
                 messageEl.classList.add('show', 'success');
-                messageEl.textContent = result.message || 'Profile completed successfully! You can now start receiving bookings.';
+                messageEl.textContent = result.message || 'Profile completed successfully! You can now log into the SPANA app to upload verification documents.';
                 btn.textContent = 'Profile Completed ✓';
                 setTimeout(() => {
                   window.location.href = '/complete-registration?success=true&token=' + encodeURIComponent(data.token) + '&uid=' + encodeURIComponent(data.uid);
@@ -520,5 +523,6 @@ exports.submitProfile = async (req: any, res: any) => {
     res.status(500).json({ message: 'Server error', error: error instanceof Error ? error.message : 'Unknown error' });
   }
 };
+
 
 export {};
