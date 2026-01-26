@@ -3,28 +3,79 @@ import prisma from '../lib/database';
 // Get overall platform statistics
 exports.getPlatformStats = async (req: any, res: any) => {
   try {
-    const [
-      totalUsers,
-      totalProviders,
-      totalCustomers,
-      totalServices,
-      totalBookings,
-      completedBookings,
-      activeProviders,
-      totalRevenue
-    ] = await Promise.all([
-      prisma.user.count(),
-      prisma.serviceProvider.count(),
-      prisma.customer.count(),
-      prisma.service.count({ where: { adminApproved: true } }),
-      prisma.booking.count(),
-      prisma.booking.count({ where: { status: 'completed' } }),
-      prisma.serviceProvider.count({ where: { applicationStatus: 'active', isVerified: true } }),
-      prisma.payment.aggregate({
+    // Execute queries with error handling for each
+    let totalUsers = 0;
+    let totalProviders = 0;
+    let totalCustomers = 0;
+    let totalServices = 0;
+    let totalBookings = 0;
+    let completedBookings = 0;
+    let activeProviders = 0;
+    let totalRevenue = 0;
+
+    try {
+      totalUsers = await prisma.user.count();
+    } catch (err: any) {
+      console.warn('Error counting users:', err.message);
+    }
+
+    try {
+      totalProviders = await prisma.serviceProvider.count();
+    } catch (err: any) {
+      console.warn('Error counting providers:', err.message);
+    }
+
+    try {
+      totalCustomers = await prisma.customer.count();
+    } catch (err: any) {
+      console.warn('Error counting customers:', err.message);
+    }
+
+    try {
+      totalServices = await prisma.service.count({ where: { adminApproved: true } });
+    } catch (err: any) {
+      console.warn('Error counting services:', err.message);
+    }
+
+    try {
+      totalBookings = await prisma.booking.count();
+    } catch (err: any) {
+      console.warn('Error counting bookings:', err.message);
+    }
+
+    try {
+      completedBookings = await prisma.booking.count({ where: { status: 'completed' } });
+    } catch (err: any) {
+      console.warn('Error counting completed bookings:', err.message);
+    }
+
+    try {
+      activeProviders = await prisma.serviceProvider.count({ 
+        where: { applicationStatus: 'active', isVerified: true } 
+      });
+    } catch (err: any) {
+      console.warn('Error counting active providers:', err.message);
+    }
+
+    try {
+      const revenueResult = await prisma.payment.aggregate({
         where: { status: 'completed' },
         _sum: { amount: true }
-      })
-    ]);
+      });
+      totalRevenue = revenueResult._sum?.amount || 0;
+    } catch (err: any) {
+      console.warn('Error calculating revenue:', err.message);
+      // Fallback: calculate from bookings if payment table has issues
+      try {
+        const bookings = await prisma.booking.findMany({
+          where: { status: 'completed' },
+          select: { calculatedPrice: true, basePrice: true }
+        });
+        totalRevenue = bookings.reduce((sum, b) => sum + (b.calculatedPrice || b.basePrice || 0), 0);
+      } catch (fallbackErr: any) {
+        console.warn('Error in revenue fallback calculation:', fallbackErr.message);
+      }
+    }
 
     res.json({
       users: {
@@ -39,15 +90,18 @@ exports.getPlatformStats = async (req: any, res: any) => {
       bookings: {
         total: totalBookings,
         completed: completedBookings,
-        completionRate: totalBookings > 0 ? ((completedBookings / totalBookings) * 100).toFixed(2) : 0
+        completionRate: totalBookings > 0 ? ((completedBookings / totalBookings) * 100).toFixed(2) : '0.00'
       },
       revenue: {
-        total: totalRevenue._sum.amount || 0
+        total: totalRevenue
       }
     });
-  } catch (error) {
+  } catch (error: any) {
     console.error('Get platform stats error', error);
-    res.status(500).json({ message: 'Server error' });
+    res.status(500).json({ 
+      message: 'Server error',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
   }
 };
 
