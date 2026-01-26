@@ -6,7 +6,7 @@
 
 import axios, { AxiosError } from 'axios';
 
-const EMAIL_SERVICE_URL = process.env.EMAIL_SERVICE_URL || 'https://spana-email-service.vercel.app';
+const EMAIL_SERVICE_URL = process.env.EMAIL_SERVICE_URL || 'https://email-microservice-pi.vercel.app';
 const EMAIL_SERVICE_SECRET = process.env.EMAIL_SERVICE_SECRET || process.env.API_SECRET;
 
 interface EmailOptions {

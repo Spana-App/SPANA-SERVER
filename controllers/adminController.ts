@@ -1,35 +1,50 @@
 import prisma from '../lib/database';
 const nodeCrypto = require('crypto');
-const { sendVerificationEmail, sendAdminOTPEmail } = require('../config/mailer');
+const bcrypt = require('bcryptjs');
+const { sendVerificationEmail, sendAdminOTPEmail, sendWelcomeEmail } = require('../config/mailer');
+const { generateUserReferenceAsync } = require('../lib/idGenerator');
 
 // Helper function to get proper base URL for verification links
 function getBaseUrl(req?: any): string {
-  // Try to get from request headers first (most reliable)
-  if (req && req.headers && req.headers.host) {
-    const protocol = req.headers['x-forwarded-proto'] || (req.secure ? 'https' : 'http');
-    return `${protocol}://${req.headers.host}`;
-  }
-  
-  // Check environment variables
-  let baseUrl = process.env.CLIENT_URL || process.env.EXTERNAL_API_URL;
-  
-  // Handle '*' (CORS wildcard) or invalid URLs
-  if (!baseUrl || baseUrl === '*' || !baseUrl.startsWith('http')) {
-    // Try EXTERNAL_API_URL
-    if (process.env.EXTERNAL_API_URL && process.env.EXTERNAL_API_URL.startsWith('http')) {
+  // Priority 1: Use EXTERNAL_API_URL in production (never use localhost for verification links)
+  if (process.env.NODE_ENV === 'production' || process.env.EXTERNAL_API_URL) {
+    const externalUrl = process.env.EXTERNAL_API_URL;
+    if (externalUrl && externalUrl.startsWith('http')) {
       try {
-        return new URL(process.env.EXTERNAL_API_URL).origin;
+        return new URL(externalUrl).origin;
       } catch (e) {
-        // Invalid URL, continue to fallback
+        // Invalid URL, continue to next option
       }
     }
-    
-    // Fallback to localhost with PORT
-    const port = process.env.PORT || '5003';
-    return `http://localhost:${port}`;
   }
   
-  return baseUrl.replace(/\/$/, ''); // Remove trailing slash
+  // Priority 2: Use CLIENT_URL if set
+  if (process.env.CLIENT_URL && process.env.CLIENT_URL.startsWith('http') && process.env.CLIENT_URL !== '*') {
+    return process.env.CLIENT_URL.replace(/\/$/, '');
+  }
+  
+  // Priority 3: Try to get from request headers (only if not in production)
+  if (req && req.headers && req.headers.host && process.env.NODE_ENV !== 'production') {
+    const protocol = req.headers['x-forwarded-proto'] || (req.secure ? 'https' : 'http');
+    const host = req.headers.host;
+    // Don't use localhost in production
+    if (!host.includes('localhost') && !host.includes('127.0.0.1')) {
+      return `${protocol}://${host}`;
+    }
+  }
+  
+  // Priority 4: Fallback to EXTERNAL_API_URL even if NODE_ENV is not production
+  if (process.env.EXTERNAL_API_URL && process.env.EXTERNAL_API_URL.startsWith('http')) {
+    try {
+      return new URL(process.env.EXTERNAL_API_URL).origin;
+    } catch (e) {
+      // Invalid URL, continue to fallback
+    }
+  }
+  
+  // Last resort: localhost (only for local development)
+  const port = process.env.PORT || '5003';
+  return `http://localhost:${port}`;
 }
 
 // Resend admin verification email
@@ -1127,6 +1142,290 @@ exports.verifyOTP = async (req: any, res: any) => {
   } catch (error) {
     console.error('Verify OTP error', error);
     res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// Admin creates service provider (CMS only) - Provider sets password on profile completion
+exports.registerServiceProvider = async (req: any, res: any) => {
+  try {
+    const { firstName, lastName, email, phone } = req.body;
+
+    // Validate required fields
+    if (!firstName || !lastName || !email || !phone) {
+      return res.status(400).json({ 
+        message: 'Missing required fields: firstName, lastName, email, phone' 
+      });
+    }
+
+    // Check if user already exists
+    const existingUser = await prisma.user.findUnique({ 
+      where: { email: email.toLowerCase() } 
+    });
+    if (existingUser) {
+      return res.status(400).json({ message: 'User already exists with this email' });
+    }
+
+    // Create user with placeholder password (provider will set their own on form)
+    const placeholderPassword = nodeCrypto.randomBytes(32).toString('hex');
+    const hashedPlaceholder = await bcrypt.hash(placeholderPassword, 12);
+    const referenceNumber = await generateUserReferenceAsync();
+    
+    const user = await prisma.user.create({
+      data: {
+        email: email.toLowerCase(),
+        password: hashedPlaceholder, // Placeholder - user must set password on complete registration
+        firstName,
+        lastName,
+        phone,
+        role: 'service_provider',
+        isEmailVerified: false,
+        referenceNumber
+      }
+    });
+
+    // Create service provider record with verification token
+    const verificationToken = nodeCrypto.randomBytes(32).toString('hex');
+    await prisma.serviceProvider.create({
+      data: {
+        userId: user.id,
+        skills: [],
+        experienceYears: 0,
+        isOnline: false,
+        rating: 0,
+        totalReviews: 0,
+        isVerified: false,
+        isIdentityVerified: false,
+        availability: { days: [], hours: { start: '', end: '' } },
+        serviceAreaRadius: 0,
+        serviceAreaCenter: { type: 'Point', coordinates: [0, 0] },
+        isProfileComplete: false,
+        verificationToken,
+        verificationExpires: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) // 7 days
+      }
+    });
+
+    // Build profile completion link - prioritize EXTERNAL_API_URL
+    let baseUrl = process.env.EXTERNAL_API_URL;
+    if (!baseUrl || baseUrl === '*' || !baseUrl.startsWith('http')) {
+      if (process.env.CLIENT_URL && process.env.CLIENT_URL.startsWith('http') && process.env.CLIENT_URL !== '*') {
+        baseUrl = process.env.CLIENT_URL;
+      } else {
+        // Fallback to production URL
+        baseUrl = 'https://spana-server-5bhu.onrender.com';
+      }
+    }
+    const cleanBaseUrl = baseUrl.replace(/\/$/, '');
+    const profileCompletionLink = `${cleanBaseUrl}/complete-registration?token=${verificationToken}&uid=${user.id}`;
+
+    // Send welcome email with profile completion link
+    try {
+      console.log(`[Admin] Attempting to send service provider welcome email to ${user.email}...`);
+      const { sendWelcomeEmail } = require('../config/mailer');
+      await sendWelcomeEmail(user, { 
+        token: verificationToken, 
+        uid: user.id 
+      });
+      console.log(`[Admin] ✅ Service provider welcome email sent to ${user.email}`);
+    } catch (emailError: any) {
+      console.error('[Admin] ❌ Failed to send service provider welcome email:', emailError.message);
+      // Don't fail provider creation if email fails
+    }
+
+    res.status(201).json({
+      message: 'Service provider created successfully. Welcome email sent with profile completion link.',
+      user: {
+        id: user.id,
+        email: user.email,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        phone: user.phone,
+        role: user.role,
+        referenceNumber,
+        isEmailVerified: false
+      },
+      profileCompletionLink,
+      note: 'Provider must complete profile and set password via the link sent in email.'
+    });
+  } catch (error: any) {
+    console.error('Register service provider error:', error);
+    res.status(500).json({ 
+      message: 'Server error', 
+      error: error.message 
+    });
+  }
+};
+
+// Admin creates another admin (CMS only) - Auto-generates password
+exports.registerAdmin = async (req: any, res: any) => {
+  try {
+    const { firstName, lastName, email, phone } = req.body;
+
+    // Validate required fields
+    if (!firstName || !lastName || !email || !phone) {
+      return res.status(400).json({ 
+        message: 'Missing required fields: firstName, lastName, email, phone' 
+      });
+    }
+
+    // Check if user already exists
+    const existingUser = await prisma.user.findUnique({ 
+      where: { email: email.toLowerCase() } 
+    });
+    if (existingUser) {
+      return res.status(400).json({ message: 'User already exists with this email' });
+    }
+
+    // Validate email domain for admin
+    const getAdminDomains = (): string[] => {
+      const envDomains = process.env.ADMIN_EMAIL_DOMAINS;
+      if (envDomains) {
+        return envDomains.split(',').map(d => d.trim().toLowerCase());
+      }
+      return ['@spana.co.za', '@gmail.com'];
+    };
+    
+    const emailLower = email.toLowerCase();
+    const isAdminEmail = getAdminDomains().some(domain => emailLower.endsWith(domain));
+    
+    if (!isAdminEmail) {
+      const allowedDomains = getAdminDomains().join(', ');
+      return res.status(400).json({ 
+        message: `Admin email must be from an admin domain (${allowedDomains})` 
+      });
+    }
+
+    // Generate secure random password (12 characters: letters, numbers, special chars)
+    // ONLY admins get auto-generated passwords
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*';
+    let autoGeneratedPassword = '';
+    for (let i = 0; i < 12; i++) {
+      autoGeneratedPassword += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    
+    const hashedPassword = await bcrypt.hash(autoGeneratedPassword, 12);
+    const referenceNumber = await generateUserReferenceAsync();
+    
+    // Create user with admin role
+    const user = await prisma.user.create({
+      data: {
+        email: email.toLowerCase(),
+        password: hashedPassword,
+        firstName,
+        lastName,
+        phone,
+        role: 'admin',
+        isEmailVerified: false,
+        referenceNumber
+      }
+    });
+
+    // Create admin verification record
+    try {
+      await prisma.adminVerification.create({
+        data: {
+          adminEmail: email.toLowerCase(),
+          verified: false
+        }
+      });
+    } catch (err) {
+      console.error('Error creating admin verification record:', err);
+    }
+
+    // Send admin credentials email with auto-generated password
+    try {
+      console.log(`[Admin] Attempting to send admin credentials email to ${user.email}...`);
+      const { sendAdminCredentialsEmail } = require('../config/mailer');
+      await sendAdminCredentialsEmail({
+        to: user.email,
+        name: `${user.firstName} ${user.lastName}`,
+        email: user.email,
+        password: autoGeneratedPassword
+      });
+      console.log(`[Admin] ✅ Admin credentials email sent to ${user.email}`);
+    } catch (emailError: any) {
+      console.error('[Admin] ❌ Failed to send admin credentials email:', emailError.message);
+      // Don't fail admin creation if email fails
+    }
+
+    res.status(201).json({
+      message: 'Admin created successfully. Credentials email sent with auto-generated password.',
+      user: {
+        id: user.id,
+        email: user.email,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        phone: user.phone,
+        role: user.role,
+        referenceNumber,
+        isEmailVerified: false
+      },
+      password: autoGeneratedPassword, // Return for admin reference (also sent via email)
+      note: 'Password sent via email. Admin should change password after first login.'
+    });
+  } catch (error: any) {
+    console.error('Register admin error:', error);
+    res.status(500).json({ 
+      message: 'Server error', 
+      error: error.message 
+    });
+  }
+};
+
+// Admin updates their own profile (password, etc.)
+exports.updateAdminProfile = async (req: any, res: any) => {
+  try {
+    const adminId = req.user.id; // From auth middleware
+    const { password, firstName, lastName, phone } = req.body;
+
+    const updateData: any = {};
+    
+    if (firstName) updateData.firstName = firstName;
+    if (lastName) updateData.lastName = lastName;
+    if (phone) updateData.phone = phone;
+    
+    // Update password if provided
+    if (password) {
+      if (password.length < 8) {
+        return res.status(400).json({ 
+          message: 'Password must be at least 8 characters long' 
+        });
+      }
+      updateData.password = await bcrypt.hash(password, 12);
+    }
+
+    if (Object.keys(updateData).length === 0) {
+      return res.status(400).json({ 
+        message: 'No fields to update' 
+      });
+    }
+
+    const updatedUser = await prisma.user.update({
+      where: { id: adminId },
+      data: updateData,
+      select: {
+        id: true,
+        email: true,
+        firstName: true,
+        lastName: true,
+        phone: true,
+        role: true,
+        isEmailVerified: true,
+        profileImage: true,
+        createdAt: true,
+        updatedAt: true
+      }
+    });
+
+    res.json({
+      message: 'Profile updated successfully',
+      user: updatedUser
+    });
+  } catch (error: any) {
+    console.error('Update admin profile error:', error);
+    res.status(500).json({ 
+      message: 'Server error', 
+      error: error.message 
+    });
   }
 };
 

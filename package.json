@@ -9,6 +9,8 @@
     "build": "tsc && npx prisma generate",
     "test": "jest",
     "test:routes": "npx ts-node scripts/testAllRoutes.ts",
+    "test:admin": "npx ts-node scripts/testAdminCMSFlow.ts",
+    "get:otp": "npx ts-node scripts/getAdminOTP.ts",
     "setup:env": "node scripts/setupEnv.js",
     "test:smtp": "npx ts-node scripts/testSmtp.ts",
     "cleanup:users": "node scripts/cleanupUsers.js",

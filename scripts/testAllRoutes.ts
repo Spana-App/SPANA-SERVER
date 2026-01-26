@@ -29,6 +29,22 @@ let providerId: string = '';
 let serviceId: string = '';
 let bookingId: string = '';
 
+// Helper function to check if status code is positive (200-299 or expected validation codes)
+function isPositiveStatus(statusCode: number, expectedStatus?: number | number[]): boolean {
+  // 200-299 are success codes
+  if (statusCode >= 200 && statusCode < 300) return true;
+  
+  // If expected status is specified, check if it matches
+  if (expectedStatus) {
+    const expectedCodes = Array.isArray(expectedStatus) ? expectedStatus : [expectedStatus];
+    if (expectedCodes.includes(statusCode)) return true;
+  }
+  
+  // 400-499 are client errors (validation, not found, etc.) - these are "positive" in that the route works
+  // 500+ are server errors - these are failures
+  return statusCode < 500;
+}
+
 // Helper function to make requests
 async function testRoute(
   method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE',
@@ -44,6 +60,7 @@ async function testRoute(
       'Content-Type': 'application/json',
     },
     validateStatus: () => true, // Don't throw on any status
+    timeout: 10000, // 10 second timeout per request
   };
 
   if (token) {
@@ -56,8 +73,9 @@ async function testRoute(
 
   try {
     const response = await axios(config);
+    const isPositive = isPositiveStatus(response.status, expectedStatus);
     const statusCodes = Array.isArray(expectedStatus) ? expectedStatus : [expectedStatus || 200, 201];
-    const passed = !expectedStatus || statusCodes.includes(response.status);
+    const passed = isPositive && (!expectedStatus || statusCodes.includes(response.status));
 
     return {
       route,
@@ -101,6 +119,27 @@ function printResults() {
   console.log(`❌ Failed: ${failed}`);
   console.log(`⏭️  Skipped: ${skipped}\n`);
 
+  // Show status code breakdown
+  const statusCodes = results
+    .filter(r => r.statusCode)
+    .reduce((acc: any, r) => {
+      const code = r.statusCode!;
+      acc[code] = (acc[code] || 0) + 1;
+      return acc;
+    }, {});
+
+  if (Object.keys(statusCodes).length > 0) {
+    console.log('Status Code Breakdown:');
+    Object.entries(statusCodes)
+      .sort(([a], [b]) => parseInt(a) - parseInt(b))
+      .forEach(([code, count]) => {
+        const emoji = parseInt(code) >= 200 && parseInt(code) < 300 ? '✅' : 
+                      parseInt(code) >= 400 && parseInt(code) < 500 ? '⚠️' : '❌';
+        console.log(`  ${emoji} ${code}: ${count}`);
+      });
+    console.log('');
+  }
+
   if (failed > 0) {
     console.log('\n❌ FAILED TESTS:\n');
     results
@@ -122,7 +161,13 @@ function printResults() {
   }
 
   console.log('\n' + '='.repeat(80));
-  console.log(failed === 0 ? '✅ ALL TESTS PASSED!' : '❌ SOME TESTS FAILED');
+  const allPositive = results.every(r => 
+    r.status === 'PASS' || 
+    r.status === 'SKIP' || 
+    (r.statusCode && r.statusCode >= 200 && r.statusCode < 500)
+  );
+  console.log(allPositive && failed === 0 ? '✅ ALL TESTS PASSED - ALL ROUTES RETURN POSITIVE STATUS CODES!' : 
+              failed === 0 ? '✅ ALL TESTS PASSED!' : '❌ SOME TESTS FAILED');
   console.log('='.repeat(80) + '\n');
 }
 
@@ -374,8 +419,219 @@ async function runTests() {
   // 19. Admin Verification (requires query params, 400 is expected without them)
   results.push(await testRoute('GET', '/admin/verify', undefined, undefined, [200, 400]));
 
+  // 20. Admin Provider Registration
+  console.log('\n📋 Testing Admin Provider Registration Routes...');
+  if (adminToken) {
+    results.push(await testRoute('POST', '/admin/providers/register', {
+      firstName: 'Test',
+      lastName: 'Provider',
+      email: `admin-created-provider-${Date.now()}@test.com`,
+      phone: '+27123456789',
+    }, adminToken, [201, 400]));
+  }
+
+  // 21. Admin Admin Registration
+  console.log('\n📋 Testing Admin Admin Registration Routes...');
+  if (adminToken) {
+    results.push(await testRoute('POST', '/admin/admins/register', {
+      firstName: 'Test',
+      lastName: 'Admin',
+      email: `admin-created-admin-${Date.now()}@spana.co.za`,
+      phone: '+27123456789',
+    }, adminToken, [201, 400]));
+  }
+
+  // 22. Admin Profile Update
+  console.log('\n📋 Testing Admin Profile Routes...');
+  if (adminToken) {
+    results.push(await testRoute('PUT', '/admin/profile', {
+      firstName: 'Updated',
+      lastName: 'Admin',
+    }, adminToken, [200, 400]));
+  }
+
+  // 23. Registration Routes (Profile Completion)
+  console.log('\n📋 Testing Registration Routes...');
+  results.push(await testRoute('GET', '/complete-registration', undefined, undefined, [200, 400]));
+  results.push(await testRoute('GET', '/verify-provider', undefined, undefined, [200, 302, 400]));
+
+  // 24. Chat Routes
+  console.log('\n📋 Testing Chat Routes...');
+  if (customerToken) {
+    results.push(await testRoute('GET', '/chat/my-chats', undefined, customerToken));
+    if (providerId) {
+      results.push(await testRoute('GET', `/chat/history/${providerId}`, undefined, customerToken, [200, 404]));
+    }
+  }
+  if (adminToken) {
+    results.push(await testRoute('GET', '/chat/admin/all', undefined, adminToken));
+  }
+
+  // 25. Provider Routes
+  console.log('\n📋 Testing Provider Routes...');
+  if (providerToken) {
+    results.push(await testRoute('PUT', '/provider/online-status', { online: true }, providerToken));
+    results.push(await testRoute('GET', '/provider/online-status', undefined, providerToken));
+    results.push(await testRoute('PUT', '/provider/location', {
+      lng: 28.0473,
+      lat: -26.2041,
+      address: 'Sandton',
+    }, providerToken));
+  }
+  if (customerToken) {
+    results.push(await testRoute('PUT', '/provider/customer/location', {
+      lng: 28.0473,
+      lat: -26.2041,
+      address: 'Sandton',
+    }, customerToken));
+  }
+  if (adminToken) {
+    results.push(await testRoute('GET', '/provider/online', undefined, adminToken));
+  }
+
+  // 26. Maps Routes
+  console.log('\n📋 Testing Maps Routes...');
+  results.push(await testRoute('GET', '/maps/geocode?address=Sandton', undefined, undefined, [200, 400]));
+  results.push(await testRoute('GET', '/maps/reverse-geocode?lat=-26.2041&lng=28.0473', undefined, undefined, [200, 400]));
+  results.push(await testRoute('GET', '/maps/route?origin=-26.2041,28.0473&destination=-26.1076,28.0567', undefined, undefined, [200, 400]));
+  if (customerToken && bookingId) {
+    results.push(await testRoute('GET', `/maps/booking/${bookingId}/embed`, undefined, customerToken, [200, 404]));
+    results.push(await testRoute('GET', `/maps/booking/${bookingId}/directions`, undefined, customerToken, [200, 404]));
+  }
+
+  // 27. Workflows Routes
+  console.log('\n📋 Testing Workflows Routes...');
+  if (customerToken && bookingId) {
+    results.push(await testRoute('GET', `/workflows/${bookingId}`, undefined, customerToken, [200, 404]));
+    results.push(await testRoute('PUT', `/workflows/${bookingId}/steps/0`, {
+      status: 'completed',
+    }, customerToken, [200, 404, 400]));
+  }
+
+  // 28. Upload Routes
+  console.log('\n📋 Testing Upload Routes...');
+  if (customerToken) {
+    // Skip file upload tests (requires multipart/form-data)
+    results.push(skipRoute('/uploads/profile', 'POST', 'Requires file upload - manual test needed'));
+    results.push(skipRoute('/uploads/documents', 'POST', 'Requires file upload - manual test needed'));
+  }
+
+  // 29. Password Reset Routes (test verify-token endpoint)
+  console.log('\n📋 Testing Password Reset Routes...');
+  results.push(await testRoute('GET', '/password-reset/verify-token?token=invalid&email=test@test.com', undefined, undefined, [200, 400]));
+
+  // 30. Privacy Routes (additional)
+  console.log('\n📋 Testing Additional Privacy Routes...');
+  if (customerToken) {
+    results.push(await testRoute('PUT', '/privacy/consent', {
+      marketing: true,
+      analytics: true,
+    }, customerToken, [200, 400]));
+  }
+
+  // 31. Complaints Routes (additional)
+  console.log('\n📋 Testing Additional Complaints Routes...');
+  if (customerToken && bookingId) {
+    results.push(await testRoute('POST', '/complaints', {
+      bookingId,
+      subject: 'Test Complaint',
+      description: 'This is a test complaint',
+      category: 'service_quality',
+    }, customerToken, [201, 400, 404]));
+  }
+  if (customerToken) {
+    results.push(await testRoute('GET', '/complaints/invalid-id', undefined, customerToken, [404, 400]));
+  }
+
+  // 32. Services Routes (additional)
+  console.log('\n📋 Testing Additional Services Routes...');
+  results.push(await testRoute('GET', '/services/invalid-id', undefined, undefined, [404, 400]));
+  if (providerToken && serviceId) {
+    results.push(await testRoute('PUT', `/services/${serviceId}`, {
+      title: 'Updated Service',
+    }, providerToken, [200, 403, 404]));
+    results.push(await testRoute('DELETE', `/services/${serviceId}`, undefined, providerToken, [200, 403, 404]));
+  }
+
+  // 33. Bookings Routes (additional)
+  console.log('\n📋 Testing Additional Bookings Routes...');
+  if (customerToken) {
+    results.push(await testRoute('GET', '/bookings/invalid-id', undefined, customerToken, [404, 400]));
+  }
+  if (providerToken) {
+    results.push(await testRoute('GET', '/bookings', undefined, providerToken));
+    if (bookingId) {
+      results.push(await testRoute('GET', `/bookings/${bookingId}`, undefined, providerToken, [200, 404]));
+      results.push(await testRoute('POST', `/bookings/${bookingId}/accept`, {}, providerToken, [200, 400, 404]));
+      results.push(await testRoute('POST', `/bookings/${bookingId}/decline`, {}, providerToken, [200, 400, 404]));
+    }
+  }
+
+  // 34. Payments Routes (additional)
+  console.log('\n📋 Testing Additional Payments Routes...');
+  if (customerToken && bookingId) {
+    results.push(await testRoute('POST', '/payments/intent', {
+      bookingId,
+      amount: 100.00,
+    }, customerToken, [200, 400, 404]));
+  }
+  if (adminToken && bookingId) {
+    results.push(await testRoute('POST', `/payments/${bookingId}/release`, {}, adminToken, [200, 400, 404]));
+  }
+  // PayFast webhook (no auth)
+  results.push(await testRoute('POST', '/payments/payfast-webhook', {}, undefined, [200, 400]));
+  results.push(await testRoute('GET', '/payments/payfast-webhook', undefined, undefined, [200, 400]));
+
+  // 35. Notifications Routes (additional)
+  console.log('\n📋 Testing Additional Notifications Routes...');
+  if (customerToken) {
+    // Create a notification ID for testing (use a non-existent ID, expect 404)
+    results.push(await testRoute('POST', '/notifications/invalid-id/read', {}, customerToken, [404, 400]));
+  }
+
+  // 36. Users Routes (additional)
+  console.log('\n📋 Testing Additional Users Routes...');
+  if (adminToken) {
+    results.push(await testRoute('GET', '/users', undefined, adminToken));
+    if (customerId) {
+      results.push(await testRoute('DELETE', `/users/${customerId}`, undefined, adminToken, [200, 404]));
+    }
+  }
+  if (adminToken) {
+    results.push(await testRoute('POST', '/users/verify', {
+      userId: providerId,
+      verified: true,
+    }, adminToken, [200, 400, 404]));
+  }
+
+  // 37. Admin Routes (additional)
+  console.log('\n📋 Testing Additional Admin Routes...');
+  if (adminToken) {
+    results.push(await testRoute('POST', '/admin/resend-verification', {
+      email: 'test@test.com',
+    }, adminToken, [200, 400]));
+    results.push(await testRoute('POST', '/admin/otp/verify', {
+      email: 'test@test.com',
+      otp: '123456',
+    }, undefined, [200, 400]));
+    if (serviceId) {
+      results.push(await testRoute('POST', `/admin/services/${serviceId}/assign`, {
+        providerId: providerId,
+      }, adminToken, [200, 400, 404]));
+      results.push(await testRoute('POST', `/admin/services/${serviceId}/unassign`, {}, adminToken, [200, 400, 404]));
+      results.push(await testRoute('DELETE', `/admin/services/${serviceId}`, undefined, adminToken, [200, 404]));
+    }
+    if (providerId) {
+      results.push(await testRoute('GET', `/admin/providers/${providerId}/performance`, undefined, adminToken, [200, 404]));
+    }
+  }
+
   // Print results
   printResults();
+  
+  // Exit with appropriate code
+  const failed = results.filter(r => r.status === 'FAIL').length;
+  process.exit(failed > 0 ? 1 : 0);
 }
 
 // Run tests

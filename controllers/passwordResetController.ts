@@ -89,7 +89,9 @@ exports.requestPasswordReset = async (req: any, res: any) => {
 
     // Send reset email
     try {
-      const resetLink = `${process.env.CLIENT_URL || 'http://localhost:3000'}/reset-password?token=${resetToken}&email=${encodeURIComponent(user.email)}`;
+      // Use EXTERNAL_API_URL for reset links (backend handles the reset endpoint)
+      const baseUrl = process.env.EXTERNAL_API_URL || 'https://spana-server-5bhu.onrender.com';
+      const resetLink = `${baseUrl}/password-reset/reset?token=${resetToken}&email=${encodeURIComponent(user.email)}`;
       await sendPasswordResetEmail({
         to: user.email,
         name: user.firstName,

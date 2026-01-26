@@ -254,9 +254,9 @@ exports.createPaymentIntent = async (req, res) => {
     const payfastData: any = {
       merchant_id: PAYFAST_MERCHANT_ID,
       merchant_key: PAYFAST_MERCHANT_KEY,
-      return_url: `${process.env.CLIENT_URL || 'http://localhost:3000'}/payment-success?bookingId=${bookingId}`,
-      cancel_url: `${process.env.CLIENT_URL || 'http://localhost:3000'}/payment-cancelled?bookingId=${bookingId}`,
-      notify_url: `${process.env.CLIENT_URL || 'http://localhost:5003'}/payments/payfast-webhook`,
+      return_url: `${process.env.CLIENT_URL || process.env.EXTERNAL_API_URL || 'https://spana-server-5bhu.onrender.com'}/payment-success?bookingId=${bookingId}`,
+      cancel_url: `${process.env.CLIENT_URL || process.env.EXTERNAL_API_URL || 'https://spana-server-5bhu.onrender.com'}/payment-cancelled?bookingId=${bookingId}`,
+      notify_url: `${process.env.EXTERNAL_API_URL || 'https://spana-server-5bhu.onrender.com'}/payments/payfast-webhook`,
       name_first: booking.customer.user.firstName,
       name_last: booking.customer.user.lastName,
       email_address: booking.customer.user.email,

@@ -580,6 +580,112 @@ async function sendAdminOTPEmail({ to, name, otp, verificationLink }: any) {
   return sendMailWithRetry({ to, subject, text, html });
 }
 
+function buildAdminCredentialsEmail({ name, email, password }: any) {
+  const subject = 'Your SPANA Admin Account Credentials 🔐';
+  const text = `Hi ${name},\n\nYour admin account has been created!\n\nLogin Credentials:\nEmail: ${email}\nPassword: ${password}\n\n⚠️ IMPORTANT: Please change your password after first login for security.\n\nYou can now access the SPANA admin panel.\n\nBest regards,\nThe SPANA Team`;
+  const html = `
+    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background-color: #ffffff;">
+      <div style="background: #0066CC; padding: 30px; text-align: center; border-radius: 10px 10px 0 0;">
+        <h1 style="color: #ffffff; margin: 0; font-size: 28px;">🔐 Admin Account Created</h1>
+      </div>
+      <div style="background: #F5F5F5; padding: 30px; border: 1px solid #e0e0e0; border-radius: 0 0 10px 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
+        <h2 style="color: #000000; margin-top: 0;">Hello ${name}!</h2>
+        <p style="color: #333333; line-height: 1.6; font-size: 16px;">
+          Your admin account has been created! Use the credentials below to log in.
+        </p>
+        <div style="background: #ffffff; border: 2px solid #0066CC; padding: 20px; margin: 30px 0; border-radius: 8px;">
+          <h3 style="color: #0066CC; margin-top: 0;">Login Credentials:</h3>
+          <p style="color: #333333; font-size: 16px; margin: 10px 0;"><strong>Email:</strong> ${email}</p>
+          <p style="color: #333333; font-size: 16px; margin: 10px 0;"><strong>Password:</strong> <code style="background: #f0f0f0; padding: 5px 10px; border-radius: 4px; font-family: monospace;">${password}</code></p>
+        </div>
+        <div style="background: #fff3cd; border-left: 4px solid #ffc107; padding: 15px; margin: 20px 0;">
+          <p style="color: #856404; margin: 0; font-weight: bold;">⚠️ IMPORTANT:</p>
+          <p style="color: #856404; margin: 5px 0 0 0;">Please change your password after first login for security.</p>
+        </div>
+        <p style="color: #333333; line-height: 1.6; font-size: 16px;">
+          You can now access the SPANA admin panel and manage the platform.
+        </p>
+        <p style="color: #333333; margin-top: 25px;">Best regards,<br><strong>The SPANA Team</strong></p>
+      </div>
+      <div style="text-align: center; margin-top: 20px; color: #999999; font-size: 12px;">
+        <p>© ${new Date().getFullYear()} SPANA. All rights reserved.</p>
+      </div>
+    </div>
+  `;
+  return { subject, text, html };
+}
+
+async function sendAdminCredentialsEmail({ to, name, email, password }: any) {
+  if (USE_EMAIL_SERVICE && emailService.isEmailServiceEnabled()) {
+    try {
+      return await emailService.sendEmailViaService({
+        to,
+        subject: `Your SPANA Admin Account Credentials 🔐`,
+        text: `Hi ${name},\n\nYour admin account has been created!\n\nLogin Credentials:\nEmail: ${email}\nPassword: ${password}\n\n⚠️ IMPORTANT: Please change your password after first login.\n\nBest regards,\nThe SPANA Team`,
+        html: buildAdminCredentialsEmail({ name, email, password }).html,
+        type: 'admin_credentials'
+      });
+    } catch (error: any) {
+      console.error('[Mailer] Email service failed, falling back to SMTP:', error.message);
+    }
+  }
+  const { subject, text, html } = buildAdminCredentialsEmail({ name, email, password });
+  return sendMailWithRetry({ to, subject, text, html });
+}
+
+function buildCustomerWelcomeEmail({ name, email, password }: any) {
+  const subject = 'Welcome to SPANA! Your Account Details 🎉';
+  const text = `Hi ${name},\n\nWelcome to SPANA! Your account has been created.\n\nLogin Credentials:\nEmail: ${email}\nPassword: ${password}\n\n⚠️ IMPORTANT: Please change your password after first login for security.\n\nYou can now start booking services on SPANA!\n\nBest regards,\nThe SPANA Team`;
+  const html = `
+    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background-color: #ffffff;">
+      <div style="background: #0066CC; padding: 30px; text-align: center; border-radius: 10px 10px 0 0;">
+        <h1 style="color: #ffffff; margin: 0; font-size: 28px;">🎉 Welcome to SPANA!</h1>
+      </div>
+      <div style="background: #F5F5F5; padding: 30px; border: 1px solid #e0e0e0; border-radius: 0 0 10px 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
+        <h2 style="color: #000000; margin-top: 0;">Hello ${name}!</h2>
+        <p style="color: #333333; line-height: 1.6; font-size: 16px;">
+          Welcome to SPANA! Your account has been created. Use the credentials below to log in.
+        </p>
+        <div style="background: #ffffff; border: 2px solid #0066CC; padding: 20px; margin: 30px 0; border-radius: 8px;">
+          <h3 style="color: #0066CC; margin-top: 0;">Login Credentials:</h3>
+          <p style="color: #333333; font-size: 16px; margin: 10px 0;"><strong>Email:</strong> ${email}</p>
+          <p style="color: #333333; font-size: 16px; margin: 10px 0;"><strong>Password:</strong> <code style="background: #f0f0f0; padding: 5px 10px; border-radius: 4px; font-family: monospace;">${password}</code></p>
+        </div>
+        <div style="background: #fff3cd; border-left: 4px solid #ffc107; padding: 15px; margin: 20px 0;">
+          <p style="color: #856404; margin: 0; font-weight: bold;">⚠️ IMPORTANT:</p>
+          <p style="color: #856404; margin: 5px 0 0 0;">Please change your password after first login for security.</p>
+        </div>
+        <p style="color: #333333; line-height: 1.6; font-size: 16px;">
+          You can now start booking services on SPANA!
+        </p>
+        <p style="color: #333333; margin-top: 25px;">Best regards,<br><strong>The SPANA Team</strong></p>
+      </div>
+      <div style="text-align: center; margin-top: 20px; color: #999999; font-size: 12px;">
+        <p>© ${new Date().getFullYear()} SPANA. All rights reserved.</p>
+      </div>
+    </div>
+  `;
+  return { subject, text, html };
+}
+
+async function sendCustomerWelcomeEmail({ to, name, email, password }: any) {
+  if (USE_EMAIL_SERVICE && emailService.isEmailServiceEnabled()) {
+    try {
+      return await emailService.sendEmailViaService({
+        to,
+        subject: `Welcome to SPANA! Your Account Details 🎉`,
+        text: `Hi ${name},\n\nWelcome to SPANA! Your account has been created.\n\nLogin Credentials:\nEmail: ${email}\nPassword: ${password}\n\n⚠️ IMPORTANT: Please change your password after first login.\n\nBest regards,\nThe SPANA Team`,
+        html: buildCustomerWelcomeEmail({ name, email, password }).html,
+        type: 'customer_welcome'
+      });
+    } catch (error: any) {
+      console.error('[Mailer] Email service failed, falling back to SMTP:', error.message);
+    }
+  }
+  const { subject, text, html } = buildCustomerWelcomeEmail({ name, email, password });
+  return sendMailWithRetry({ to, subject, text, html });
+}
+
 module.exports = {
   sendMail,
   sendWelcomeEmail,
@@ -590,6 +696,8 @@ module.exports = {
   sendPasswordResetEmail,
   sendInvoiceEmail,
   sendAdminOTPEmail,
+  sendAdminCredentialsEmail,
+  sendCustomerWelcomeEmail,
   async verifySmtp() {
     try {
       // Check if SMTP is disabled first

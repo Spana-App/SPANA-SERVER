@@ -209,14 +209,19 @@ exports.register = async (req: any, res: any) => {
               verificationExpires: new Date(Date.now() + 24 * 60 * 60 * 1000)
             }
           });
-          let baseUrl = process.env.CLIENT_URL || process.env.EXTERNAL_API_URL;
+          // Prioritize EXTERNAL_API_URL to avoid localhost
+          let baseUrl = process.env.EXTERNAL_API_URL;
           if (!baseUrl || baseUrl === '*' || !baseUrl.startsWith('http')) {
-            if (process.env.EXTERNAL_API_URL && process.env.EXTERNAL_API_URL.startsWith('http')) {
+            if (process.env.CLIENT_URL && process.env.CLIENT_URL.startsWith('http') && process.env.CLIENT_URL !== '*') {
+              baseUrl = process.env.CLIENT_URL;
+            } else if (process.env.EXTERNAL_API_URL && process.env.EXTERNAL_API_URL.startsWith('http')) {
               try {
                 baseUrl = new URL(process.env.EXTERNAL_API_URL).origin;
-              } catch (e) {}
-            }
-            if (!baseUrl || baseUrl === '*' || !baseUrl.startsWith('http')) {
+              } catch (e) {
+                const port = process.env.PORT || '5003';
+                baseUrl = `http://localhost:${port}`;
+              }
+            } else {
               const port = process.env.PORT || '5003';
               baseUrl = `http://localhost:${port}`;
             }
@@ -346,18 +351,33 @@ exports.login = async (req: any, res: any) => {
         }
       });
 
-      // Get base URL for verification link
-      let baseUrl = process.env.EXTERNAL_API_URL || process.env.CLIENT_URL;
-      if (req && req.headers && req.headers.host) {
-        const protocol = req.headers['x-forwarded-proto'] || (req.secure ? 'https' : 'http');
-        baseUrl = `${protocol}://${req.headers.host}`;
-      } else if (!baseUrl || baseUrl === '*' || !baseUrl.startsWith('http')) {
+      // Get base URL for verification link - prioritize EXTERNAL_API_URL to avoid localhost
+      let baseUrl = process.env.EXTERNAL_API_URL;
+      
+      // Only use request headers if EXTERNAL_API_URL is not set and not in production
+      if (!baseUrl || baseUrl === '*' || !baseUrl.startsWith('http')) {
+        if (process.env.CLIENT_URL && process.env.CLIENT_URL.startsWith('http') && process.env.CLIENT_URL !== '*') {
+          baseUrl = process.env.CLIENT_URL;
+        } else if (req && req.headers && req.headers.host && process.env.NODE_ENV !== 'production') {
+          const protocol = req.headers['x-forwarded-proto'] || (req.secure ? 'https' : 'http');
+          const host = req.headers.host;
+          // Don't use localhost in production
+          if (!host.includes('localhost') && !host.includes('127.0.0.1')) {
+            baseUrl = `${protocol}://${host}`;
+          }
+        }
+      }
+      
+      // Final fallback: use EXTERNAL_API_URL if available, otherwise localhost (dev only)
+      if (!baseUrl || baseUrl === '*' || !baseUrl.startsWith('http')) {
         if (process.env.EXTERNAL_API_URL && process.env.EXTERNAL_API_URL.startsWith('http')) {
           try {
             baseUrl = new URL(process.env.EXTERNAL_API_URL).origin;
-          } catch (e) {}
-        }
-        if (!baseUrl || baseUrl === '*' || !baseUrl.startsWith('http')) {
+          } catch (e) {
+            const port = process.env.PORT || '5003';
+            baseUrl = `http://localhost:${port}`;
+          }
+        } else {
           const port = process.env.PORT || '5003';
           baseUrl = `http://localhost:${port}`;
         }
