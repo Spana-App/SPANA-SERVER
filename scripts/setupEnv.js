@@ -47,11 +47,11 @@ async function setupEnvironment() {
 
   // Create .env content
   const envContent = `# Database Configuration
-DATABASE_URL="postgresql://postgres:EksIsHands0me@localhost:5432/spana_db"
+DATABASE_URL="postgresql://postgres:[YOUR-PASSWORD]@localhost:5432/spana_db"
 POSTGRES_HOST=localhost
 POSTGRES_PORT=5432
 POSTGRES_USER=postgres
-POSTGRES_PASSWORD=EksIsHands0me
+POSTGRES_PASSWORD=[YOUR-PASSWORD]
 POSTGRES_DB=spana_db
 POSTGRES_SSL=false
 

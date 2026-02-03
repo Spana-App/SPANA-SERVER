@@ -7,7 +7,7 @@ Render provides **two** connection strings for your database:
 ### 1. **Internal Database URL** (For Render Services)
 **Use this when your backend is deployed on Render:**
 ```
-postgresql://spana_users:U2kOB5yHZDB5vI9tuEfPqLB2t52Ai3SH@dpg-d3p2ooc9c44c738ksb8g-a/spana_db
+postgresql://spana_users:[YOUR-PASSWORD]@dpg-d3p2ooc9c44c738ksb8g-a/spana_db
 ```
 - ✅ Faster (internal network)
 - ✅ No SSL needed
@@ -17,7 +17,7 @@ postgresql://spana_users:U2kOB5yHZDB5vI9tuEfPqLB2t52Ai3SH@dpg-d3p2ooc9c44c738ksb
 ### 2. **External Database URL** (For Local Development)
 **Use this when developing locally:**
 ```
-postgresql://spana_users:U2kOB5yHZDB5vI9tuEfPqLB2t52Ai3SH@dpg-d3p2ooc9c44c738ksb8g-a.frankfurt-postgres.render.com/spana_db?sslmode=require
+postgresql://spana_users:[YOUR-PASSWORD]@dpg-d3p2ooc9c44c738ksb8g-a.frankfurt-postgres.render.com/spana_db?sslmode=require
 ```
 - ✅ Works from anywhere
 - ✅ Requires SSL (`?sslmode=require`)
@@ -26,7 +26,7 @@ postgresql://spana_users:U2kOB5yHZDB5vI9tuEfPqLB2t52Ai3SH@dpg-d3p2ooc9c44c738ksb
 ## What Was Fixed
 
 1. **render.yaml** - Updated to use **Internal URL** for Render deployments:
-   - Internal URL: `postgresql://spana_users:U2kOB5yHZDB5vI9tuEfPqLB2t52Ai3SH@dpg-d3p2ooc9c44c738ksb8g-a/spana_db`
+   - Internal URL: `postgresql://spana_users:[YOUR-PASSWORD]@dpg-d3p2ooc9c44c738ksb8g-a/spana_db`
    - `POSTGRES_SSL=false` (not needed for internal connections)
 
 2. **lib/database.ts** - Auto-detects internal vs external URLs and configures SSL accordingly
@@ -39,7 +39,7 @@ Uses **Internal URL** - already configured** ✅
 ### For Local Development (.env or start scripts)
 Use **External URL** with SSL:
 ```env
-DATABASE_URL="postgresql://spana_users:U2kOB5yHZDB5vI9tuEfPqLB2t52Ai3SH@dpg-d3p2ooc9c44c738ksb8g-a.frankfurt-postgres.render.com/spana_db?sslmode=require"
+DATABASE_URL="postgresql://spana_users:[YOUR-PASSWORD]@dpg-d3p2ooc9c44c738ksb8g-a.frankfurt-postgres.render.com/spana_db?sslmode=require"
 POSTGRES_SSL=true
 ```
 
@@ -53,7 +53,7 @@ POSTGRES_SSL=true
 
 You can test the connection using `psql`:
 ```bash
-psql "postgresql://spana_users:U2kOB5yHZDB5vI9tuEfPqLB2t52Ai3SH@dpg-d3p2ooc9c44c738ksb8g-a.frankfurt-postgres.render.com:5432/spana_db?sslmode=require"
+psql "postgresql://spana_users:[YOUR-PASSWORD]@dpg-d3p2ooc9c44c738ksb8g-a.frankfurt-postgres.render.com:5432/spana_db?sslmode=require"
 ```
 
 Or test with Prisma:

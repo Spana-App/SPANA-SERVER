@@ -57,12 +57,12 @@ Copy the output and paste it as your `JWT_SECRET` value.
 
 ### For Local Development (External)
 ```
-postgresql://spana_users:U2kOB5yHZDB5vI9tuEfPqLB2t52Ai3SH@dpg-d3p2ooc9c44c738ksb8g-a.frankfurt-postgres.render.com/spana_db?sslmode=require
+postgresql://spana_users:[YOUR-PASSWORD]@dpg-d3p2ooc9c44c738ksb8g-a.frankfurt-postgres.render.com/spana_db?sslmode=require
 ```
 
 ### For Render Production (Internal)
 ```
-postgresql://spana_users:U2kOB5yHZDB5vI9tuEfPqLB2t52Ai3SH@dpg-d3p2ooc9c44c738ksb8g-a/spana_db
+postgresql://spana_users:[YOUR-PASSWORD]@dpg-d3p2ooc9c44c738ksb8g-a/spana_db
 ```
 
 ## SMTP Configuration

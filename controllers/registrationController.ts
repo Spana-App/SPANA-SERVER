@@ -46,20 +46,6 @@ exports.completeRegistration = async (req: any, res: any) => {
             p {
               color: #666;
               font-size: 16px;
-              margin-bottom: 30px;
-            }
-            .btn {
-              display: inline-block;
-              padding: 12px 30px;
-              background: #0066CC;
-              color: white;
-              text-decoration: none;
-              border-radius: 5px;
-              font-weight: bold;
-              transition: background 0.3s;
-            }
-            .btn:hover {
-              background: #0052a3;
             }
           </style>
         </head>
@@ -68,7 +54,6 @@ exports.completeRegistration = async (req: any, res: any) => {
             <div class="success-icon">✓</div>
             <h1>Registration Complete!</h1>
             <p>Your profile has been set up successfully. You can now log into the SPANA app to start receiving bookings.</p>
-            <a href="/auth/login" class="btn">Go to Login</a>
           </div>
         </body>
         </html>
@@ -682,7 +667,7 @@ exports.submitProfile = async (req: any, res: any) => {
     });
 
     // Update provider profile and mark as verified
-    await prisma.serviceProvider.update({
+    const updatedProvider = await prisma.serviceProvider.update({
       where: { userId: uid },
       data: {
         experienceYears: experienceYears || 0,
@@ -694,8 +679,31 @@ exports.submitProfile = async (req: any, res: any) => {
       }
     });
 
+    // Send credentials email with password
+    if (updatedProvider.temporaryPassword) {
+      try {
+        console.log(`[Registration] Sending provider credentials email to ${user.email}...`);
+        const emailService = require('../lib/emailService');
+        const appDownloadLink = process.env.APP_DOWNLOAD_LINK || 'https://spana.co.za/download';
+        
+        await emailService.sendProviderCredentialsEmailViaService({
+          to: user.email,
+          name: `${firstName || user.firstName} ${lastName || user.lastName}`,
+          email: user.email,
+          password: updatedProvider.temporaryPassword,
+          appDownloadLink
+        });
+        
+        console.log(`[Registration] ✅ Provider credentials email sent to ${user.email}`);
+        // Note: Password remains stored until user changes it themselves
+      } catch (emailError: any) {
+        console.error('[Registration] ❌ Failed to send provider credentials email:', emailError.message);
+        // Don't fail profile completion if email fails - provider can request password reset
+      }
+    }
+
     res.json({
-      message: 'Profile completed successfully! You can now start receiving bookings.',
+      message: 'Profile completed successfully! You can now start receiving bookings. Check your email for login credentials.',
       user: {
         id: user.id,
         email: user.email,

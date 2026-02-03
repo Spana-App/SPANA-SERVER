@@ -97,6 +97,7 @@ model ServiceProvider {
   verificationToken            String?
   verificationExpires          DateTime?
   verificationTokenFirstUsedAt DateTime? // When token was first accessed (30-min countdown starts here)
+  temporaryPassword            String? // Temporary password (plaintext) - cleared after credentials email is sent
 
   // Application status
   applicationStatus String                      @default("pending") // 'pending', 'approved', 'rejected', 'active'

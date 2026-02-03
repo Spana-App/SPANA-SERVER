@@ -1165,15 +1165,24 @@ exports.registerServiceProvider = async (req: any, res: any) => {
       return res.status(400).json({ message: 'User already exists with this email' });
     }
 
-    // Create user with placeholder password (provider will set their own on form)
-    const placeholderPassword = nodeCrypto.randomBytes(32).toString('hex');
-    const hashedPlaceholder = await bcrypt.hash(placeholderPassword, 12);
+    // Generate readable password for provider (12 characters: letters, numbers, special chars)
+    // This password will be sent via email after profile completion
+    // Password stays active until user chooses to change it
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*';
+    let generatedPassword = '';
+    for (let i = 0; i < 12; i++) {
+      generatedPassword += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    
+    console.log(`[Admin] Generated password for ${email}: ${generatedPassword.substring(0, 4)}...`);
+    
+    const hashedPassword = await bcrypt.hash(generatedPassword, 12);
     const referenceNumber = await generateUserReferenceAsync();
     
     const user = await prisma.user.create({
       data: {
         email: email.toLowerCase(),
-        password: hashedPlaceholder, // Placeholder - user must set password on complete registration
+        password: hashedPassword, // Password - will be sent via email after profile completion
         firstName,
         lastName,
         phone,
@@ -1186,7 +1195,9 @@ exports.registerServiceProvider = async (req: any, res: any) => {
     // Create service provider record with verification token
     // Token never expires if unused - 30-minute countdown starts on first use
     const verificationToken = nodeCrypto.randomBytes(32).toString('hex');
-    await prisma.serviceProvider.create({
+    console.log(`[Admin] Creating ServiceProvider with temporaryPassword: ${generatedPassword.substring(0, 4)}...`);
+    
+    const serviceProvider = await prisma.serviceProvider.create({
       data: {
         userId: user.id,
         skills: [],
@@ -1202,9 +1213,12 @@ exports.registerServiceProvider = async (req: any, res: any) => {
         isProfileComplete: false,
         verificationToken,
         verificationExpires: null, // No expiration until first use
-        verificationTokenFirstUsedAt: null // Will be set when token is first accessed
+        verificationTokenFirstUsedAt: null, // Will be set when token is first accessed
+        temporaryPassword: generatedPassword // Store password - will be sent via email after profile completion
       }
     });
+    
+    console.log(`[Admin] ServiceProvider created. temporaryPassword stored: ${serviceProvider.temporaryPassword ? 'YES' : 'NO'}`);
 
     // Build profile completion link - prioritize EXTERNAL_API_URL
     let baseUrl = process.env.EXTERNAL_API_URL;

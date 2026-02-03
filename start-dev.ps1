@@ -4,10 +4,10 @@
 Write-Host "🚀 Starting SPANA Backend Development Server..." -ForegroundColor Green
 
 # Set environment variables
-$env:DATABASE_URL = "postgresql://spana_users:U2kOB5yHZDB5vI9tuEfPqLB2t52Ai3SH@dpg-d3p2ooc9c44c738ksb8g-a.frankfurt-postgres.render.com/spana_db"
+$env:DATABASE_URL = "postgresql://spana_users:[YOUR-PASSWORD]@dpg-d3p2ooc9c44c738ksb8g-a.frankfurt-postgres.render.com/spana_db"
 $env:POSTGRES_HOST = "dpg-d3p2ooc9c44c738ksb8g-a"
 $env:POSTGRES_USER = "spana_users"
-$env:POSTGRES_PASSWORD = "U2kOB5yHZDB5vI9tuEfPqLB2t52Ai3SH"
+$env:POSTGRES_PASSWORD = "[YOUR-PASSWORD]"
 $env:POSTGRES_DB = "spana_db"
 $env:POSTGRES_PORT = "5432"
 $env:POSTGRES_SSL = "true"

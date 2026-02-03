@@ -162,7 +162,7 @@ Content-Type: application/json
 ```json
 {
   "message": "Login successful",
-  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "token": "[JWT_TOKEN_HERE]",
   "user": {
     "_id": "cmkpg9men00004exsl800lzel",
     "email": "eksnxiweni@gmail.com",

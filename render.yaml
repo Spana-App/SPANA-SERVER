@@ -12,8 +12,8 @@ services:
         value: production
       # Use Internal Database URL for Render services (faster, no SSL needed)
       - key: DATABASE_URL
-        value: postgresql://spana_users:U2kOB5yHZDB5vI9tuEfPqLB2t52Ai3SH@dpg-d3p2ooc9c44c738ksb8g-a/spana_db
-      # For local development, use External URL: postgresql://spana_users:U2kOB5yHZDB5vI9tuEfPqLB2t52Ai3SH@dpg-d3p2ooc9c44c738ksb8g-a.frankfurt-postgres.render.com/spana_db?sslmode=require
+        value: postgresql://spana_users:[YOUR-PASSWORD]@dpg-d3p2ooc9c44c738ksb8g-a/spana_db
+      # For local development, use External URL: postgresql://spana_users:[YOUR-PASSWORD]@dpg-d3p2ooc9c44c738ksb8g-a.frankfurt-postgres.render.com/spana_db?sslmode=require
       - key: POSTGRES_SSL
         value: "false"
       - key: JWT_SECRET

@@ -247,7 +247,7 @@ Authorization: Bearer <your_jwt_token>
 ```json
 {
   "message": "Login successful",
-  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "token": "[JWT_TOKEN_HERE]",
   "user": {
     "_id": "cmic7dnxz000j4e7ccw1ez6ny",
     "email": "user@example.com",
@@ -300,7 +300,7 @@ Authorization: Bearer <your_jwt_token>
 ```json
 {
   "message": "OTP verified successfully",
-  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "token": "[JWT_TOKEN_HERE]",
   "user": {
     "_id": "cmic7dnxz000j4e7ccw1ez6ny",
     "email": "admin@spana.co.za",

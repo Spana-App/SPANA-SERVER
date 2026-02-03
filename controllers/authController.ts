@@ -177,6 +177,7 @@ exports.register = async (req: any, res: any) => {
       if (user.role === 'service_provider') {
         try {
           // Service provider registration token - never expires if unused, 30-min countdown starts on first use
+          // Note: For self-registration, user already set their own password, so no temporary password needed
           const verificationToken = nodeCrypto.randomBytes(32).toString('hex');
           await prisma.serviceProvider.update({
             where: { userId: user.id },

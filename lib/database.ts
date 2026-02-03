@@ -83,7 +83,7 @@ const poolConfig = {
   port: dbUrlParsed?.port || parseInt(process.env.POSTGRES_PORT || '5432'),
   database: dbUrlParsed?.database || process.env.POSTGRES_DB || 'spana_db',
   user: dbUrlParsed?.user || process.env.POSTGRES_USER || 'postgres',
-  password: dbUrlParsed?.password || process.env.POSTGRES_PASSWORD || 'EksIsHands0me',
+  password: dbUrlParsed?.password || process.env.POSTGRES_PASSWORD || '',
   ssl: shouldUseSSL ? { rejectUnauthorized: false } : false,
   max: 10, // Maximum number of clients in the pool
   min: 2, // Minimum number of clients in the pool

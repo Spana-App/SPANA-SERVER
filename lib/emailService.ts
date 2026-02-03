@@ -186,6 +186,49 @@ export async function sendWelcomeEmailViaService(options: WelcomeEmailOptions): 
 }
 
 /**
+ * Send provider credentials email via email service
+ */
+export async function sendProviderCredentialsEmailViaService(options: {
+  to: string;
+  name: string;
+  email: string;
+  password: string;
+  appDownloadLink?: string;
+}): Promise<any> {
+  if (!isEmailServiceEnabled()) {
+    throw new Error('Email service is not configured. Set EMAIL_SERVICE_URL and EMAIL_SERVICE_SECRET');
+  }
+
+  try {
+    const response = await axios.post(`${EMAIL_SERVICE_URL}/api/provider-credentials`, {
+      to: options.to,
+      name: options.name,
+      email: options.email,
+      password: options.password,
+      appDownloadLink: options.appDownloadLink,
+      apiSecret: EMAIL_SERVICE_SECRET
+    }, {
+      timeout: 30000,
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-secret': EMAIL_SERVICE_SECRET
+      }
+    });
+
+    console.log(`[Email Service] Provider credentials email sent to ${options.to}`);
+    return response.data;
+  } catch (error: any) {
+    const axiosError = error as AxiosError;
+    console.error('[Email Service] Error sending provider credentials email:', {
+      message: axiosError.message,
+      status: axiosError.response?.status,
+      data: axiosError.response?.data
+    });
+    throw new Error(`Failed to send provider credentials email: ${axiosError.message}`);
+  }
+}
+
+/**
  * Health check for email service
  */
 export async function checkEmailServiceHealth(): Promise<boolean> {
