@@ -15,268 +15,269 @@ datasource db {
 
 // Base User model with common fields
 model User {
-  id                String   @id @default(cuid())
-  referenceNumber   String?  @unique // SPN-USR-000001
-  email             String   @unique
-  password          String
-  firstName         String
-  lastName          String
-  phone             String?
-  role              String   // 'customer', 'service_provider', 'admin'
-  
+  id              String  @id @default(cuid())
+  referenceNumber String? @unique // SPN-USR-000001
+  email           String  @unique
+  password        String
+  firstName       String
+  lastName        String
+  phone           String?
+  role            String // 'customer', 'service_provider', 'admin'
+
   // Common verification flags
-  isEmailVerified   Boolean  @default(false)
-  isPhoneVerified   Boolean  @default(false)
-  verificationToken String?
+  isEmailVerified     Boolean   @default(false)
+  isPhoneVerified     Boolean   @default(false)
+  verificationToken   String?
   verificationExpires DateTime?
-  
+
   // Password reset
-  resetPasswordToken String?
+  resetPasswordToken   String?
   resetPasswordExpires DateTime?
-  
+
   // 2FA (for future implementation)
-  twoFactorEnabled Boolean  @default(false)
+  twoFactorEnabled Boolean @default(false)
   twoFactorSecret  String?
-  
+
   // Common profile fields
-  profileImage      String   @default("")
-  location          Json?    // { type: "Point", coordinates: [lng, lat], address: string }
-  walletBalance     Float    @default(0)
-  status            String   @default("active") // 'active', 'inactive', 'banned'
-  lastLoginAt       DateTime?
-  
+  profileImage  String    @default("")
+  location      Json? // { type: "Point", coordinates: [lng, lat], address: string }
+  walletBalance Float     @default(0)
+  status        String    @default("active") // 'active', 'inactive', 'banned'
+  lastLoginAt   DateTime?
+
   // Relations
-  customer          Customer?
-  serviceProvider   ServiceProvider?
-  notifications     Notification[]
-  activities        Activity[]
-  
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
+  customer        Customer?
+  serviceProvider ServiceProvider?
+  notifications   Notification[]
+  activities      Activity[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@map("users")
 }
 
 // Customer-specific data
 model Customer {
-  id                String   @id @default(cuid())
-  userId            String   @unique
-  
+  id     String @id @default(cuid())
+  userId String @unique
+
   // Customer-specific fields
   favouriteProviders String[] @default([])
-  totalBookings     Int      @default(0)
-  ratingGivenAvg    Float    @default(0)
-  ratingReceivedAvg Float    @default(0) // Average rating received from providers
-  
+  totalBookings      Int      @default(0)
+  ratingGivenAvg     Float    @default(0)
+  ratingReceivedAvg  Float    @default(0) // Average rating received from providers
+
   // Relations
-  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  bookings          Booking[]
-  payments          Payment[]
-  
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  bookings Booking[]
+  payments Payment[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@map("customers")
 }
 
 // Service Provider-specific data
 model ServiceProvider {
-  id                String   @id @default(cuid())
-  userId            String   @unique
-  
+  id     String @id @default(cuid())
+  userId String @unique
+
   // Provider-specific fields
-  skills            String[] @default([])
-  experienceYears   Int      @default(0)
-  isOnline          Boolean  @default(false)
-  rating            Float    @default(0)
-  totalReviews      Int      @default(0)
-  
+  skills          String[] @default([])
+  experienceYears Int      @default(0)
+  isOnline        Boolean  @default(false)
+  rating          Float    @default(0)
+  totalReviews    Int      @default(0)
+
   // Verification
-  isVerified        Boolean  @default(false)
-  isIdentityVerified Boolean @default(false)
-  verificationToken String?
-  verificationExpires DateTime?
-  
+  isVerified                   Boolean   @default(false)
+  isIdentityVerified           Boolean   @default(false)
+  verificationToken            String?
+  verificationExpires          DateTime?
+  verificationTokenFirstUsedAt DateTime? // When token was first accessed (30-min countdown starts here)
+
   // Application status
-  applicationStatus String   @default("pending") // 'pending', 'approved', 'rejected', 'active'
-  applicationId     String?  @unique
+  applicationStatus String                      @default("pending") // 'pending', 'approved', 'rejected', 'active'
+  applicationId     String?                     @unique
   application       ServiceProviderApplication? @relation(fields: [applicationId], references: [id])
-  
+
   // Availability (JSON for flexibility)
-  availability      Json?    // { days: string[], hours: { start: string, end: string } }
-  
+  availability Json? // { days: string[], hours: { start: string, end: string } }
+
   // Service area (geospatial)
-  serviceAreaRadius Float    @default(0)
-  serviceAreaCenter Json?    // { type: "Point", coordinates: [lng, lat] }
-  
+  serviceAreaRadius Float @default(0)
+  serviceAreaCenter Json? // { type: "Point", coordinates: [lng, lat] }
+
   // Profile completion
-  isProfileComplete Boolean  @default(false)
-  
+  isProfileComplete Boolean @default(false)
+
   // Relations
-  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  documents         Document[]
-  services          Service[]
-  payouts           ProviderPayout[]
-  
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
+  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  documents Document[]
+  services  Service[]
+  payouts   ProviderPayout[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@map("service_providers")
 }
 
 model Service {
-  id          String   @id @default(cuid())
-  title       String
-  description String
-  price       Float
-  duration    Int?     // in minutes (optional)
-  mediaUrl    String?
-  status      String   @default("draft") // 'draft', 'pending_approval', 'active', 'archived'
-  adminApproved Boolean @default(false) // Admin must approve before clients can see
-  approvedBy   String?  // Admin user ID who approved
-  approvedAt   DateTime?
+  id              String    @id @default(cuid())
+  title           String
+  description     String
+  price           Float
+  duration        Int? // in minutes (optional)
+  mediaUrl        String?
+  status          String    @default("draft") // 'draft', 'pending_approval', 'active', 'archived'
+  adminApproved   Boolean   @default(false) // Admin must approve before clients can see
+  approvedBy      String? // Admin user ID who approved
+  approvedAt      DateTime?
   rejectionReason String? // If admin rejects
-  isSystemService Boolean @default(false) // True for default system services that come with the platform
-  
+  isSystemService Boolean   @default(false) // True for default system services that come with the platform
+
   // Relations
-  providerId  String?  // Optional: Admin can create services without provider, assign later
-  provider    ServiceProvider? @relation(fields: [providerId], references: [id], onDelete: Cascade)
-  bookings    Booking[]
-  workflows   ServiceWorkflow[]
-  complaints  Complaint[]
-  
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  providerId String? // Optional: Admin can create services without provider, assign later
+  provider   ServiceProvider?  @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  bookings   Booking[]
+  workflows  ServiceWorkflow[]
+  complaints Complaint[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@map("services")
 }
 
 model Booking {
-  id                     String   @id @default(cuid())
-  referenceNumber        String?  @unique // SPANA-BK-000001
-  date                   DateTime
-  time                   String
-  location               Json?    // { type: "Point", coordinates: [lng, lat], address: string }
-  notes                  String?
-  status                 String   @default("pending") // 'pending', 'confirmed', 'in_progress', 'completed', 'cancelled'
-  
+  id              String   @id @default(cuid())
+  referenceNumber String?  @unique // SPANA-BK-000001
+  date            DateTime
+  time            String
+  location        Json? // { type: "Point", coordinates: [lng, lat], address: string }
+  notes           String?
+  status          String   @default("pending") // 'pending', 'confirmed', 'in_progress', 'completed', 'cancelled'
+
   // Job size and pricing
-  jobSize                String?  // 'small', 'medium', 'large', 'custom'
-  basePrice              Float?   // Base service price
-  jobSizeMultiplier      Float?   @default(1.0) // Multiplier based on job size
-  calculatedPrice        Float?   // Final calculated price
-  locationMultiplier     Float?   @default(1.0) // Location-based price multiplier (e.g., Sandton=1.3, Soweto=0.85)
-  providerDistance       Float?   // Distance to provider in km
-  
+  jobSize            String? // 'small', 'medium', 'large', 'custom'
+  basePrice          Float? // Base service price
+  jobSizeMultiplier  Float?  @default(1.0) // Multiplier based on job size
+  calculatedPrice    Float? // Final calculated price
+  locationMultiplier Float?  @default(1.0) // Location-based price multiplier (e.g., Sandton=1.3, Soweto=0.85)
+  providerDistance   Float? // Distance to provider in km
+
   // SLA tracking
-  estimatedDurationMinutes Int    @default(0)
-  startedAt              DateTime?
-  completedAt            DateTime?
-  slaBreached            Boolean  @default(false)
-  slaPenaltyAmount       Float?   @default(0) // Penalty for SLA breach
-  actualDurationMinutes  Int?    // Actual time taken
-  
+  estimatedDurationMinutes Int       @default(0)
+  startedAt                DateTime?
+  completedAt              DateTime?
+  slaBreached              Boolean   @default(false)
+  slaPenaltyAmount         Float?    @default(0) // Penalty for SLA breach
+  actualDurationMinutes    Int? // Actual time taken
+
   // Proximity tracking
-  proximityDetected      Boolean  @default(false)
-  proximityDetectedAt     DateTime?
-  proximityStartTime     DateTime? // When they first got close
-  canStartJob            Boolean  @default(false) // True after 5 mins in proximity
-  
+  proximityDetected   Boolean   @default(false)
+  proximityDetectedAt DateTime?
+  proximityStartTime  DateTime? // When they first got close
+  canStartJob         Boolean   @default(false) // True after 5 mins in proximity
+
   // Live tracking (for mobile app)
-  providerLiveLocation   Json?    // { type: "Point", coordinates: [lng, lat] }
-  customerLiveLocation   Json?    // { type: "Point", coordinates: [lng, lat] }
-  distanceApart          Float?   // Distance in meters
-  
+  providerLiveLocation Json? // { type: "Point", coordinates: [lng, lat] }
+  customerLiveLocation Json? // { type: "Point", coordinates: [lng, lat] }
+  distanceApart        Float? // Distance in meters
+
   // Rating and review
-  rating                 Int?     // 1-5 (customer rating provider)
-  review                 String?  // Customer review
-  customerRating         Int?     // 1-5 (provider rating customer)
-  customerReview         String?  // Provider review of customer
-  
+  rating         Int? // 1-5 (customer rating provider)
+  review         String? // Customer review
+  customerRating Int? // 1-5 (provider rating customer)
+  customerReview String? // Provider review of customer
+
   // NEW: Request/accept flow (Uber-style)
-  requestStatus          String   @default("pending") // 'pending', 'accepted', 'declined', 'expired'
-  providerAcceptedAt     DateTime?
-  providerDeclinedAt    DateTime?
-  declineReason          String?
-  
+  requestStatus      String    @default("pending") // 'pending', 'accepted', 'declined', 'expired'
+  providerAcceptedAt DateTime?
+  providerDeclinedAt DateTime?
+  declineReason      String?
+
   // NEW: Escrow payment tracking
-  paymentStatus          String   @default("pending") // 'pending', 'paid_to_escrow', 'released_to_provider', 'refunded'
-  escrowAmount           Float?
-  commissionAmount       Float?
-  providerPayoutAmount   Float?
-  
+  paymentStatus        String @default("pending") // 'pending', 'paid_to_escrow', 'released_to_provider', 'refunded'
+  escrowAmount         Float?
+  commissionAmount     Float?
+  providerPayoutAmount Float?
+
   // NEW: Chat room tokens (generated at specific stages)
-  providerChatToken      String?  // Generated when provider accepts
-  customerChatToken      String?  // Generated when payment is confirmed
-  chatActive             Boolean  @default(false) // True when both tokens exist
-  chatTerminatedAt       DateTime? // When chat is closed (job completed)
-  
+  providerChatToken String? // Generated when provider accepts
+  customerChatToken String? // Generated when payment is confirmed
+  chatActive        Boolean   @default(false) // True when both tokens exist
+  chatTerminatedAt  DateTime? // When chat is closed (job completed)
+
   // Invoice
-  invoiceNumber          String?  // Unique invoice number
-  invoiceSentAt          DateTime?
-  
+  invoiceNumber String? // Unique invoice number
+  invoiceSentAt DateTime?
+
   // Relations
-  customerId             String
-  customer               Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
-  
-  serviceId              String
-  service                Service  @relation(fields: [serviceId], references: [id], onDelete: Cascade)
-  
-  payment                Payment?
-  complaints             Complaint[]
-  
-  createdAt              DateTime @default(now())
-  updatedAt              DateTime @updatedAt
+  customerId String
+  customer   Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  serviceId String
+  service   Service @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+
+  payment    Payment?
+  complaints Complaint[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@map("bookings")
 }
 
 model Payment {
-  id            String   @id @default(cuid())
+  id              String  @id @default(cuid())
   referenceNumber String? @unique // SPANA-PY-000001
-  amount        Float
-  currency      String   @default("ZAR")
-  paymentMethod String   // 'payfast', 'wallet', 'mobile_money'
-  status        String   @default("pending") // 'pending', 'completed', 'failed', 'refunded'
-  transactionId String?
-  
+  amount          Float
+  currency        String  @default("ZAR")
+  paymentMethod   String // 'payfast', 'wallet', 'mobile_money'
+  status          String  @default("pending") // 'pending', 'completed', 'failed', 'refunded'
+  transactionId   String?
+
   // NEW: Escrow fields
-  escrowStatus     String   @default("held") // 'held', 'released', 'refunded'
-  commissionRate   Float    @default(0.15) // 15% default commission
+  escrowStatus     String  @default("held") // 'held', 'released', 'refunded'
+  commissionRate   Float   @default(0.15) // 15% default commission
   commissionAmount Float?
   providerPayout   Float?
-  tipAmount        Float?   @default(0) // Optional tip from customer
-  payfastPaymentId String?  // PayFast transaction ID
-  payfastSignature String?  // PayFast signature for verification
-  
+  tipAmount        Float?  @default(0) // Optional tip from customer
+  payfastPaymentId String? // PayFast transaction ID
+  payfastSignature String? // PayFast signature for verification
+
   // Relations
-  customerId    String
-  customer      Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
-  
-  bookingId     String   @unique
-  booking       Booking  @relation(fields: [bookingId], references: [id], onDelete: Cascade)
-  
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  customerId String
+  customer   Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  bookingId String  @unique
+  booking   Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@map("payments")
 }
 
 model Document {
-  id        String   @id @default(cuid())
-  type      String   // 'profile_picture', 'id_number', 'id_picture', 'license', 'certification', etc.
-  url       String
-  verified  Boolean  @default(false)
-  verifiedBy String? // Admin user ID who verified
-  verifiedAt DateTime?
+  id              String    @id @default(cuid())
+  type            String // 'profile_picture', 'id_number', 'id_picture', 'license', 'certification', etc.
+  url             String
+  verified        Boolean   @default(false)
+  verifiedBy      String? // Admin user ID who verified
+  verifiedAt      DateTime?
   rejectionReason String? // If admin rejects
-  metadata  Json?    // Additional data (e.g., ID number for type='id_number')
-  
+  metadata        Json? // Additional data (e.g., ID number for type='id_number')
+
   // Relations
-  providerId String
-  provider   ServiceProvider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  providerId   String
+  provider     ServiceProvider       @relation(fields: [providerId], references: [id], onDelete: Cascade)
   verification DocumentVerification?
-  
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -284,84 +285,84 @@ model Document {
 }
 
 model Notification {
-  id      String   @id @default(cuid())
+  id      String @id @default(cuid())
   message String
-  type    String   @default("system") // 'system', 'reminder', 'promo'
-  status  String   @default("sent")   // 'sent', 'read', 'unread'
-  
+  type    String @default("system") // 'system', 'reminder', 'promo'
+  status  String @default("sent") // 'sent', 'read', 'unread'
+
   // Relations
-  userId  String
-  user    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
   createdAt DateTime @default(now())
 
   @@map("notifications")
 }
 
 model Activity {
-  id          String   @id @default(cuid())
-  actionType  String   // 'register', 'login', 'logout', 'service_create', 'booking_create', etc.
-  contentId   String?  // ID of related content
+  id           String   @id @default(cuid())
+  actionType   String // 'register', 'login', 'logout', 'service_create', 'booking_create', etc.
+  contentId    String? // ID of related content
   contentModel String? // Type of related content
-  details     Json?    // Additional data
-  device      String?
-  location    String?
-  timestamp   DateTime @default(now())
-  
+  details      Json? // Additional data
+  device       String?
+  location     String?
+  timestamp    DateTime @default(now())
+
   // Relations
-  userId      String
-  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  
-  createdAt   DateTime @default(now())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
 
   @@map("activities")
 }
 
 // Additional models for workflows and other features
 model ServiceWorkflow {
-  id          String   @id @default(cuid())
+  id          String  @id @default(cuid())
   name        String
   description String?
-  steps       Json     // Array of workflow steps
-  isActive    Boolean  @default(true)
-  
+  steps       Json // Array of workflow steps
+  isActive    Boolean @default(true)
+
   // Relations
-  serviceId   String
-  service     Service  @relation(fields: [serviceId], references: [id], onDelete: Cascade)
-  
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  serviceId String
+  service   Service @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@map("service_workflows")
 }
 
 model Message {
-  id            String   @id @default(cuid())
+  id              String  @id @default(cuid())
   referenceNumber String? @unique // SPN-MSG-000001
-  content       String
-  senderId      String
-  receiverId String? // Null for booking chat or admin chat
-  bookingId String?  // For booking-related chat
-  chatType  String   @default("direct") // 'booking', 'direct', 'admin' (provider-admin only)
-  isRead    Boolean  @default(false)
-  metadata  Json?    // For attachments, call info, etc.
-  
+  content         String
+  senderId        String
+  receiverId      String? // Null for booking chat or admin chat
+  bookingId       String? // For booking-related chat
+  chatType        String  @default("direct") // 'booking', 'direct', 'admin' (provider-admin only)
+  isRead          Boolean @default(false)
+  metadata        Json? // For attachments, call info, etc.
+
   createdAt DateTime @default(now())
 
-  @@map("messages")
   @@index([senderId])
   @@index([receiverId])
   @@index([bookingId])
+  @@map("messages")
 }
 
 model Recommendation {
-  id          String   @id @default(cuid())
-  userId      String
-  serviceId   String
-  score       Float
-  reason      String?
-  
-  createdAt   DateTime @default(now())
+  id        String  @id @default(cuid())
+  userId    String
+  serviceId String
+  score     Float
+  reason    String?
+
+  createdAt DateTime @default(now())
 
   @@map("recommendations")
 }
@@ -372,7 +373,7 @@ model Session {
   token     String   @unique
   expiresAt DateTime
   isActive  Boolean  @default(true)
-  
+
   createdAt DateTime @default(now())
 
   @@map("sessions")
@@ -380,183 +381,183 @@ model Session {
 
 // NEW: Spana Wallet (escrow account)
 model SpanaWallet {
-  id            String   @id @default(cuid())
-  totalHeld     Float    @default(0) // Total funds in escrow
-  totalReleased Float    @default(0) // Total released to providers
-  totalCommission Float  @default(0) // Total commission earned
-  transactions  WalletTransaction[]
-  
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
-  
+  id              String              @id @default(cuid())
+  totalHeld       Float               @default(0) // Total funds in escrow
+  totalReleased   Float               @default(0) // Total released to providers
+  totalCommission Float               @default(0) // Total commission earned
+  transactions    WalletTransaction[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
   @@map("spana_wallet")
 }
 
 model WalletTransaction {
-  id            String   @id @default(cuid())
-  walletId      String
-  wallet        SpanaWallet @relation(fields: [walletId], references: [id], onDelete: Cascade)
-  type          String   // 'deposit', 'release', 'commission', 'refund'
-  amount        Float
-  bookingId     String?
-  paymentId     String?
-  description   String?
-  
-  createdAt     DateTime @default(now())
-  
+  id          String      @id @default(cuid())
+  walletId    String
+  wallet      SpanaWallet @relation(fields: [walletId], references: [id], onDelete: Cascade)
+  type        String // 'deposit', 'release', 'commission', 'refund'
+  amount      Float
+  bookingId   String?
+  paymentId   String?
+  description String?
+
+  createdAt DateTime @default(now())
+
   @@map("wallet_transactions")
 }
 
 // NEW: Admin verification tracking
 model AdminVerification {
-  id            String   @id @default(cuid())
-  adminEmail    String   @unique
-  verified      Boolean  @default(false)
-  verifiedAt    DateTime?
-  verifiedBy    String?  // Admin ID who verified
-  
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
-  
+  id         String    @id @default(cuid())
+  adminEmail String    @unique
+  verified   Boolean   @default(false)
+  verifiedAt DateTime?
+  verifiedBy String? // Admin ID who verified
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
   @@map("admin_verifications")
 }
 
 // NEW: Complaint/Issue tracking
 model Complaint {
-  id            String   @id @default(cuid())
-  bookingId     String?  // Optional: can report without booking (general harassment)
-  booking       Booking? @relation(fields: [bookingId], references: [id], onDelete: Cascade)
-  serviceId     String?
-  service       Service? @relation(fields: [serviceId], references: [id], onDelete: SetNull)
-  
-  reportedBy   String   // User ID who reported
-  reportedByRole String // 'customer' or 'service_provider'
+  id        String   @id @default(cuid())
+  bookingId String? // Optional: can report without booking (general harassment)
+  booking   Booking? @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  serviceId String?
+  service   Service? @relation(fields: [serviceId], references: [id], onDelete: SetNull)
+
+  reportedBy      String // User ID who reported
+  reportedByRole  String // 'customer' or 'service_provider'
   reportedAgainst String? // User ID being reported (for customer reporting provider harassment)
-  type         String   // 'service_quality', 'behavior', 'harassment', 'payment', 'sla_breach', 'other'
-  severity     String   @default("medium") // 'low', 'medium', 'high', 'critical'
-  title        String
-  description  String
-  status       String   @default("open") // 'open', 'investigating', 'resolved', 'dismissed'
-  resolution   String?
-  resolvedBy   String?   // Admin ID who resolved
-  resolvedAt   DateTime?
-  
-  attachments  Json?    // Array of file URLs
-  
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
-  
+  type            String // 'service_quality', 'behavior', 'harassment', 'payment', 'sla_breach', 'other'
+  severity        String    @default("medium") // 'low', 'medium', 'high', 'critical'
+  title           String
+  description     String
+  status          String    @default("open") // 'open', 'investigating', 'resolved', 'dismissed'
+  resolution      String?
+  resolvedBy      String? // Admin ID who resolved
+  resolvedAt      DateTime?
+
+  attachments Json? // Array of file URLs
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
   @@map("complaints")
 }
 
 // NEW: Service Provider Application
 model ServiceProviderApplication {
-  id            String   @id @default(cuid())
-  email         String   @unique
-  firstName     String
-  lastName      String
-  phone         String
-  status        String   @default("pending") // 'pending', 'approved', 'rejected', 'invited'
-  
+  id        String @id @default(cuid())
+  email     String @unique
+  firstName String
+  lastName  String
+  phone     String
+  status    String @default("pending") // 'pending', 'approved', 'rejected', 'invited'
+
   // Application details
-  skills        String[] @default([])
-  experienceYears Int    @default(0)
-  motivation    String?  // Why they want to join
-  location      Json?    // { type: "Point", coordinates: [lng, lat], address: string }
-  
+  skills          String[] @default([])
+  experienceYears Int      @default(0)
+  motivation      String? // Why they want to join
+  location        Json? // { type: "Point", coordinates: [lng, lat], address: string }
+
   // Admin actions
-  reviewedBy    String?  // Admin user ID
-  reviewedAt    DateTime?
-  rejectionReason String?
-  invitationToken String? @unique
+  reviewedBy        String? // Admin user ID
+  reviewedAt        DateTime?
+  rejectionReason   String?
+  invitationToken   String?   @unique
   invitationExpires DateTime?
-  invitationSentAt DateTime?
-  
+  invitationSentAt  DateTime?
+
   // Relations
-  provider      ServiceProvider? @relation
-  
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
-  
+  provider ServiceProvider? @relation
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
   @@map("service_provider_applications")
 }
 
 // NEW: Admin OTP Session
 model AdminOTP {
-  id            String   @id @default(cuid())
-  adminEmail    String
-  otp           String   // 6-digit OTP
-  expiresAt     DateTime // 5 hours from creation
-  used          Boolean  @default(false)
-  usedAt        DateTime?
-  ipAddress     String?
-  userAgent     String?
-  
-  createdAt     DateTime @default(now())
-  
+  id         String    @id @default(cuid())
+  adminEmail String
+  otp        String // 6-digit OTP
+  expiresAt  DateTime // 5 hours from creation
+  used       Boolean   @default(false)
+  usedAt     DateTime?
+  ipAddress  String?
+  userAgent  String?
+
+  createdAt DateTime @default(now())
+
   @@index([adminEmail, otp])
   @@map("admin_otps")
 }
 
 // NEW: Document Verification (Third-party integration)
 model DocumentVerification {
-  id            String   @id @default(cuid())
-  documentId    String
-  document      Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
-  
+  id         String   @id @default(cuid())
+  documentId String
+  document   Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
   // Third-party verification
-  provider      String   @default("datanamix") // 'datanamix', 'manual', 'other'
-  externalId    String?  // ID from third-party service
-  status        String   @default("pending") // 'pending', 'verified', 'failed', 'rejected'
-  verificationData Json?  // Response from third-party service
-  
+  provider         String  @default("datanamix") // 'datanamix', 'manual', 'other'
+  externalId       String? // ID from third-party service
+  status           String  @default("pending") // 'pending', 'verified', 'failed', 'rejected'
+  verificationData Json? // Response from third-party service
+
   // Admin override
-  adminVerified Boolean  @default(false)
+  adminVerified   Boolean   @default(false)
   adminVerifiedBy String?
   adminVerifiedAt DateTime?
-  adminNotes    String?
-  
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
-  
+  adminNotes      String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
   @@unique([documentId])
   @@map("document_verifications")
 }
 
 // NEW: Provider Payout Tracking
 model ProviderPayout {
-  id            String   @id @default(cuid())
-  providerId    String
-  provider      ServiceProvider @relation(fields: [providerId], references: [id], onDelete: Cascade)
-  
+  id         String          @id @default(cuid())
+  providerId String
+  provider   ServiceProvider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+
   // Payout details
   periodStart   DateTime
   periodEnd     DateTime
   totalEarnings Float    @default(0)
   commission    Float    @default(0)
-  netAmount     Float    // totalEarnings - commission
+  netAmount     Float // totalEarnings - commission
   status        String   @default("pending") // 'pending', 'processing', 'paid', 'failed'
-  
+
   // Payment details
-  paymentMethod String?  // 'bank_transfer', 'mobile_money', etc.
+  paymentMethod    String? // 'bank_transfer', 'mobile_money', etc.
   paymentReference String?
-  paidAt        DateTime?
-  paidBy        String?   // Admin user ID
-  
+  paidAt           DateTime?
+  paidBy           String? // Admin user ID
+
   // Related bookings
-  bookingIds    String[] @default([]) // Array of booking IDs included in this payout
-  
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
-  
+  bookingIds String[] @default([]) // Array of booking IDs included in this payout
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
   @@map("provider_payouts")
 }
 
 // Sequence table for generating unique reference numbers
 model Sequence {
-  type        String   @id // 'booking', 'payment', 'user', 'message', 'service'
-  counter     Int      @default(1)
-  updatedAt   DateTime @updatedAt
-  
+  type      String   @id // 'booking', 'payment', 'user', 'message', 'service'
+  counter   Int      @default(1)
+  updatedAt DateTime @updatedAt
+
   @@map("sequences")
 }

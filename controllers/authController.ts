@@ -176,12 +176,14 @@ exports.register = async (req: any, res: any) => {
       // Send verification email (for providers and admins) - only if requested
       if (user.role === 'service_provider') {
         try {
+          // Service provider registration token - never expires if unused, 30-min countdown starts on first use
           const verificationToken = nodeCrypto.randomBytes(32).toString('hex');
           await prisma.serviceProvider.update({
             where: { userId: user.id },
             data: {
               verificationToken,
-              verificationExpires: new Date(Date.now() + 24 * 60 * 60 * 1000)
+              verificationExpires: null, // No expiration until first use
+              verificationTokenFirstUsedAt: null // Will be set when token is first accessed
             }
           });
 

@@ -3,7 +3,77 @@ import prisma from '../lib/database';
 // Complete registration page - renders HTML form for provider profile completion
 exports.completeRegistration = async (req: any, res: any) => {
   try {
-    const { token, uid } = req.query;
+    const { token, uid, success } = req.query;
+
+    // Handle success page (after form submission)
+    if (success === 'true') {
+      return res.send(`
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <title>Registration Complete</title>
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1.0">
+          <style>
+            * { margin: 0; padding: 0; box-sizing: border-box; }
+            body {
+              font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+              background: #F5F5F5;
+              min-height: 100vh;
+              display: flex;
+              align-items: center;
+              justify-content: center;
+              padding: 20px;
+            }
+            .container {
+              max-width: 600px;
+              background: white;
+              border-radius: 10px;
+              box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+              padding: 40px;
+              text-align: center;
+            }
+            .success-icon {
+              color: #28a745;
+              font-size: 64px;
+              margin-bottom: 20px;
+            }
+            h1 {
+              color: #0066CC;
+              font-size: 32px;
+              margin-bottom: 15px;
+            }
+            p {
+              color: #666;
+              font-size: 16px;
+              margin-bottom: 30px;
+            }
+            .btn {
+              display: inline-block;
+              padding: 12px 30px;
+              background: #0066CC;
+              color: white;
+              text-decoration: none;
+              border-radius: 5px;
+              font-weight: bold;
+              transition: background 0.3s;
+            }
+            .btn:hover {
+              background: #0052a3;
+            }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <div class="success-icon">✓</div>
+            <h1>Registration Complete!</h1>
+            <p>Your profile has been set up successfully. You can now log into the SPANA app to start receiving bookings.</p>
+            <a href="/auth/login" class="btn">Go to Login</a>
+          </div>
+        </body>
+        </html>
+      `);
+    }
 
     if (!token || !uid) {
       return res.status(400).send(`
@@ -103,27 +173,48 @@ exports.completeRegistration = async (req: any, res: any) => {
       `);
     }
 
-    // Check if token expired
-    if (provider.verificationExpires && provider.verificationExpires < new Date()) {
-      return res.status(400).send(`
-        <!DOCTYPE html>
-        <html>
-        <head>
-          <title>Token Expired</title>
-          <style>
-            body { font-family: Arial, sans-serif; text-align: center; padding: 50px; background: #F5F5F5; }
-            .container { max-width: 600px; margin: 0 auto; background: white; padding: 40px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
-            h1 { color: #0066CC; }
-          </style>
-        </head>
-        <body>
-          <div class="container">
-            <h1>❌ Token Expired</h1>
-            <p>The verification link has expired. Please request a new one.</p>
-          </div>
-        </body>
-        </html>
-      `);
+    // LAZY EXPIRATION: Token never expires if unused
+    // 30-minute countdown starts on first use
+    const now = new Date();
+    let updatedProvider = provider;
+
+    if (!provider.verificationTokenFirstUsedAt) {
+      // First time using the token - mark it as "first used" NOW
+      // This starts the 30-minute countdown
+      updatedProvider = await prisma.serviceProvider.update({
+        where: { userId: uid },
+        data: {
+          verificationTokenFirstUsedAt: now
+        }
+      });
+    } else {
+      // Token has been used before - check if it's expired (30 minutes from first use)
+      const thirtyMinutesInMs = 30 * 60 * 1000; // 30 minutes
+      const expiresAt = new Date(
+        provider.verificationTokenFirstUsedAt.getTime() + thirtyMinutesInMs
+      );
+
+      if (now > expiresAt) {
+        return res.status(400).send(`
+          <!DOCTYPE html>
+          <html>
+          <head>
+            <title>Token Expired</title>
+            <style>
+              body { font-family: Arial, sans-serif; text-align: center; padding: 50px; background: #F5F5F5; }
+              .container { max-width: 600px; margin: 0 auto; background: white; padding: 40px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+              h1 { color: #0066CC; }
+            </style>
+          </head>
+          <body>
+            <div class="container">
+              <h1>❌ Token Expired</h1>
+              <p>The verification link has expired. The token expires 30 minutes after first use. Please request a new one.</p>
+            </div>
+          </body>
+          </html>
+        `);
+      }
     }
 
     // Render profile completion form
@@ -285,12 +376,12 @@ exports.completeRegistration = async (req: any, res: any) => {
               </div>
               <div class="form-group">
                 <label>Years of Experience</label>
-                <input type="number" name="experienceYears" value="${provider.experienceYears || 0}" min="0" required>
+                <input type="number" name="experienceYears" value="${updatedProvider.experienceYears || 0}" min="0" required>
               </div>
               <div class="form-group">
                 <label>Skills (Add your service skills)</label>
                 <div id="skillsContainer" class="skills-input">
-                  ${(provider.skills || []).map((skill: string) => `
+                  ${(updatedProvider.skills || []).map((skill: string) => `
                     <span class="skill-tag" data-skill="${skill}">
                       ${skill}
                       <button type="button" class="remove-skill-btn" aria-label="Remove skill">×</button>
@@ -563,10 +654,22 @@ exports.submitProfile = async (req: any, res: any) => {
       return res.status(400).json({ message: 'Invalid token' });
     }
 
-    // Check expiration
-    if (provider.verificationExpires && provider.verificationExpires < new Date()) {
-      return res.status(400).json({ message: 'Token expired' });
+    // LAZY EXPIRATION: Check if token expired (30 minutes from first use)
+    const now = new Date();
+    if (provider.verificationTokenFirstUsedAt) {
+      // Token has been used before - check if it's expired (30 minutes from first use)
+      const thirtyMinutesInMs = 30 * 60 * 1000; // 30 minutes
+      const expiresAt = new Date(
+        provider.verificationTokenFirstUsedAt.getTime() + thirtyMinutesInMs
+      );
+
+      if (now > expiresAt) {
+        return res.status(400).json({ 
+          message: 'Token expired. The token expires 30 minutes after first use. Please request a new one.' 
+        });
+      }
     }
+    // If verificationTokenFirstUsedAt is null, token hasn't been used yet (shouldn't happen if GET was called first, but handle gracefully)
 
     // Update user profile
     await prisma.user.update({

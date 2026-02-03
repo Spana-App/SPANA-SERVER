@@ -1184,6 +1184,7 @@ exports.registerServiceProvider = async (req: any, res: any) => {
     });
 
     // Create service provider record with verification token
+    // Token never expires if unused - 30-minute countdown starts on first use
     const verificationToken = nodeCrypto.randomBytes(32).toString('hex');
     await prisma.serviceProvider.create({
       data: {
@@ -1200,7 +1201,8 @@ exports.registerServiceProvider = async (req: any, res: any) => {
         serviceAreaCenter: { type: 'Point', coordinates: [0, 0] },
         isProfileComplete: false,
         verificationToken,
-        verificationExpires: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) // 7 days
+        verificationExpires: null, // No expiration until first use
+        verificationTokenFirstUsedAt: null // Will be set when token is first accessed
       }
     });
 
