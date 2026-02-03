@@ -57,6 +57,9 @@ router.put('/profile', auth, authController.updateProfile); // Update profile (s
 router.patch('/profile', auth, authController.updateProfile); // Partial profile update (alias for PUT)
 router.post('/profile/image', auth, imageUpload.single('image'), authController.uploadProfileImage); // Upload profile image
 
+// Public endpoint for service provider applications
+router.post('/applications/submit', authController.submitApplication);
+
 module.exports = router;
 export {};
 

@@ -848,6 +848,84 @@ exports.getMe = async (req: any, res: any) => {
   }
 };
 
+// Submit service provider application (public endpoint)
+exports.submitApplication = async (req: any, res: any) => {
+  try {
+    const { email, firstName, lastName, phone, skills, experienceYears, motivation, location, documents } = req.body;
+
+    // Validate required fields
+    if (!email || !firstName || !lastName || !phone) {
+      return res.status(400).json({ 
+        message: 'Missing required fields: email, firstName, lastName, phone' 
+      });
+    }
+
+    // Check if application already exists for this email
+    const existingApplication = await prisma.serviceProviderApplication.findUnique({
+      where: { email: email.toLowerCase() }
+    });
+
+    if (existingApplication) {
+      return res.status(400).json({ 
+        message: 'An application already exists for this email address' 
+      });
+    }
+
+    // Check if user already exists
+    const existingUser = await prisma.user.findUnique({
+      where: { email: email.toLowerCase() }
+    });
+
+    if (existingUser) {
+      return res.status(400).json({ 
+        message: 'A user account already exists with this email address' 
+      });
+    }
+
+    // Create application
+    console.log(`[Application] Submitting application for ${email}`);
+    console.log(`[Application] Documents received: ${documents ? (Array.isArray(documents) ? documents.length : 'not array') : 'null'}`);
+    if (documents && Array.isArray(documents)) {
+      documents.forEach((doc, index) => {
+        console.log(`[Application] Document ${index + 1}: ${doc.name} (${doc.type}) - ${doc.url}`);
+      });
+    }
+
+    const application = await prisma.serviceProviderApplication.create({
+      data: {
+        email: email.toLowerCase(),
+        firstName,
+        lastName,
+        phone,
+        skills: Array.isArray(skills) ? skills : [],
+        experienceYears: parseInt(experienceYears) || 0,
+        motivation: motivation || null,
+        location: location || null,
+        documents: Array.isArray(documents) && documents.length > 0 ? documents : null,
+        status: 'pending'
+      }
+    });
+
+    console.log(`[Application] Application created: ${application.id}`);
+    console.log(`[Application] Documents saved: ${application.documents ? 'Yes' : 'No'}`);
+
+    res.status(201).json({
+      message: 'Application submitted successfully. We will review your application and contact you soon.',
+      application: {
+        id: application.id,
+        email: application.email,
+        status: application.status
+      }
+    });
+  } catch (error: any) {
+    console.error('Submit application error:', error);
+    res.status(500).json({ 
+      message: 'Server error', 
+      error: error.message 
+    });
+  }
+};
+
 export {};
 
 

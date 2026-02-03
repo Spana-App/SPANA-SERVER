@@ -26,7 +26,7 @@ model User {
 
   // Common verification flags
   isEmailVerified     Boolean   @default(false)
-  isPhoneVerified     Boolean   @default(false)
+  isPhoneVerified     Boolean?
   verificationToken   String?
   verificationExpires DateTime?
 
@@ -465,6 +465,7 @@ model ServiceProviderApplication {
   experienceYears Int      @default(0)
   motivation      String? // Why they want to join
   location        Json? // { type: "Point", coordinates: [lng, lat], address: string }
+  documents       Json? // Array of document objects: [{ type: string, url: string, name: string }]
 
   // Admin actions
   reviewedBy        String? // Admin user ID

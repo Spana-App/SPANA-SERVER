@@ -429,6 +429,9 @@ app.use((req: any, res: any, next: any) => {
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
+// Serve uploaded files statically
+app.use('/uploads', express.static('uploads'));
+
 // Database connection: only connect when running the server directly
 // Make it non-blocking so server starts immediately
 if (require.main === module) {

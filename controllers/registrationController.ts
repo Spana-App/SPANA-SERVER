@@ -667,12 +667,14 @@ exports.submitProfile = async (req: any, res: any) => {
     });
 
     // Update provider profile and mark as verified
+    // Also ensure email and identity verification flags are set correctly
     const updatedProvider = await prisma.serviceProvider.update({
       where: { userId: uid },
       data: {
         experienceYears: experienceYears || 0,
         skills: Array.isArray(skills) ? skills : [],
-        isVerified: true,
+        isVerified: true, // Already verified by admin
+        isIdentityVerified: true, // Already verified by admin during application review
         isProfileComplete: true,
         verificationToken: null,
         verificationExpires: null
@@ -701,6 +703,15 @@ exports.submitProfile = async (req: any, res: any) => {
         // Don't fail profile completion if email fails - provider can request password reset
       }
     }
+
+    // Ensure user email verification is set (they received credentials via email)
+    await prisma.user.update({
+      where: { id: uid },
+      data: {
+        isEmailVerified: true, // Email verified because they received credentials via email
+        isPhoneVerified: null // Phone verification not a priority
+      }
+    });
 
     res.json({
       message: 'Profile completed successfully! You can now start receiving bookings. Check your email for login credentials.',

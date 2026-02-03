@@ -51,6 +51,16 @@ router.post('/admins/register', auth, authorize('admin'), adminController.regist
 // Admin Profile Management (Admin updates their own profile/password)
 router.put('/profile', auth, authorize('admin'), adminController.updateAdminProfile);
 
+// Service Provider Applications
+// Get all applications (with optional status filter and pagination)
+router.get('/applications', auth, authorize('admin'), adminController.getAllApplications);
+// Get single application by ID
+router.get('/applications/:applicationId', auth, authorize('admin'), adminController.getApplicationById);
+// Verify application and create provider account (auto-populated from application)
+router.post('/applications/:applicationId/verify', auth, authorize('admin'), adminController.verifyApplicationAndCreateProvider);
+// Reject application
+router.post('/applications/:applicationId/reject', auth, authorize('admin'), adminController.rejectApplication);
+
 module.exports = router;
 export {};
 

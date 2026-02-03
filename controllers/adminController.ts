@@ -1185,9 +1185,10 @@ exports.registerServiceProvider = async (req: any, res: any) => {
         password: hashedPassword, // Password - will be sent via email after profile completion
         firstName,
         lastName,
-        phone,
+        phone: phone || null,
         role: 'service_provider',
-        isEmailVerified: false,
+        isEmailVerified: false, // Will be true after credentials email sent post-profile completion
+        isPhoneVerified: null, // Not a priority
         referenceNumber
       }
     });
@@ -1205,8 +1206,8 @@ exports.registerServiceProvider = async (req: any, res: any) => {
         isOnline: false,
         rating: 0,
         totalReviews: 0,
-        isVerified: false,
-        isIdentityVerified: false,
+        isVerified: true, // Admin verified documents before creating account
+        isIdentityVerified: true, // Admin verified documents before creating account
         availability: { days: [], hours: { start: '', end: '' } },
         serviceAreaRadius: 0,
         serviceAreaCenter: { type: 'Point', coordinates: [0, 0] },
@@ -1438,6 +1439,336 @@ exports.updateAdminProfile = async (req: any, res: any) => {
     });
   } catch (error: any) {
     console.error('Update admin profile error:', error);
+    res.status(500).json({ 
+      message: 'Server error', 
+      error: error.message 
+    });
+  }
+};
+
+// Verify application and create provider account
+// POST /admin/applications/:applicationId/verify
+exports.verifyApplicationAndCreateProvider = async (req: any, res: any) => {
+  try {
+    const { applicationId } = req.params;
+    const adminId = req.user.id; // Admin user ID from auth middleware
+
+    // Find the application
+    const application = await prisma.serviceProviderApplication.findUnique({
+      where: { id: applicationId },
+      include: {
+        provider: true // Check if provider already exists
+      }
+    });
+
+    if (!application) {
+      return res.status(404).json({ message: 'Application not found' });
+    }
+
+    // Check if already processed
+    if (application.status === 'approved' && application.provider) {
+      return res.status(400).json({ 
+        message: 'Application already approved and provider account created' 
+      });
+    }
+
+    if (application.status === 'rejected') {
+      return res.status(400).json({ 
+        message: 'Application was rejected and cannot be verified' 
+      });
+    }
+
+    // Check if user already exists with this email
+    const existingUser = await prisma.user.findUnique({
+      where: { email: application.email.toLowerCase() }
+    });
+
+    if (existingUser) {
+      return res.status(400).json({ 
+        message: 'User already exists with this email. Cannot create duplicate account.' 
+      });
+    }
+
+    // Generate password for provider (12 characters: letters, numbers, special chars)
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*';
+    let generatedPassword = '';
+    for (let i = 0; i < 12; i++) {
+      generatedPassword += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    
+    console.log(`[Admin] Generated password for ${application.email}: ${generatedPassword.substring(0, 4)}...`);
+    
+    const hashedPassword = await bcrypt.hash(generatedPassword, 12);
+    const referenceNumber = await generateUserReferenceAsync();
+
+    // Create user account
+    const user = await prisma.user.create({
+      data: {
+        email: application.email.toLowerCase(),
+        password: hashedPassword,
+        firstName: application.firstName,
+        lastName: application.lastName,
+        phone: application.phone || null,
+        role: 'service_provider',
+        isEmailVerified: false, // Will be true after credentials email sent post-profile completion
+        isPhoneVerified: null, // Not a priority
+        referenceNumber
+      }
+    });
+
+    // Create service provider record with verification token
+    // Token never expires if unused - 30-minute countdown starts on first use
+    const verificationToken = nodeCrypto.randomBytes(32).toString('hex');
+    
+    const serviceProvider = await prisma.serviceProvider.create({
+      data: {
+        userId: user.id,
+        skills: application.skills || [],
+        experienceYears: application.experienceYears || 0,
+        isOnline: false,
+        rating: 0,
+        totalReviews: 0,
+        isVerified: true, // Admin verified documents before creating account
+        isIdentityVerified: true, // Admin verified documents before creating account
+        availability: { days: [], hours: { start: '', end: '' } },
+        serviceAreaRadius: 0,
+        serviceAreaCenter: application.location || { type: 'Point', coordinates: [0, 0] },
+        isProfileComplete: false,
+        verificationToken,
+        verificationExpires: null, // No expiration until first use
+        verificationTokenFirstUsedAt: null, // Will be set when token is first accessed
+        temporaryPassword: generatedPassword, // Store password - will be sent via email after profile completion
+        applicationId: application.id // Link to application
+      }
+    });
+
+    // Create Document records from application documents
+    if (application.documents && Array.isArray(application.documents)) {
+      for (const docItem of application.documents) {
+        // Type assertion for JSON document object
+        const doc = docItem as any;
+        if (doc && doc.url) {
+          await prisma.document.create({
+            data: {
+              type: doc.type || 'document',
+              url: doc.url,
+              verified: false, // Will be verified by admin later
+              providerId: serviceProvider.id,
+              metadata: {
+                name: doc.name || 'Unknown',
+                size: doc.size || 0,
+                mimetype: doc.mimetype || 'application/octet-stream',
+                uploadedDuringApplication: true
+              }
+            }
+          });
+        }
+      }
+    }
+
+    // Update application status
+    await prisma.serviceProviderApplication.update({
+      where: { id: applicationId },
+      data: {
+        status: 'approved',
+        reviewedBy: adminId,
+        reviewedAt: new Date()
+      }
+    });
+
+    // Build profile completion link
+    let baseUrl = process.env.EXTERNAL_API_URL;
+    if (!baseUrl || baseUrl === '*' || !baseUrl.startsWith('http')) {
+      if (process.env.CLIENT_URL && process.env.CLIENT_URL.startsWith('http') && process.env.CLIENT_URL !== '*') {
+        baseUrl = process.env.CLIENT_URL;
+      } else {
+        baseUrl = 'https://spana-server-5bhu.onrender.com';
+      }
+    }
+    const cleanBaseUrl = baseUrl.replace(/\/$/, '');
+    const profileCompletionLink = `${cleanBaseUrl}/complete-registration?token=${verificationToken}&uid=${user.id}`;
+
+    // Send welcome email with profile completion link
+    try {
+      console.log(`[Admin] Sending service provider welcome email to ${user.email}...`);
+      await sendWelcomeEmail(user, { 
+        token: verificationToken, 
+        uid: user.id 
+      });
+      console.log(`[Admin] ✅ Service provider welcome email sent to ${user.email}`);
+    } catch (emailError: any) {
+      console.error('[Admin] ❌ Failed to send service provider welcome email:', emailError.message);
+      // Don't fail provider creation if email fails
+    }
+
+    res.json({
+      message: 'Application verified and provider account created successfully',
+      user: {
+        id: user.id,
+        email: user.email,
+        firstName: user.firstName,
+        lastName: user.lastName
+      },
+      provider: {
+        id: serviceProvider.id,
+        isVerified: serviceProvider.isVerified,
+        isIdentityVerified: serviceProvider.isIdentityVerified
+      },
+      application: {
+        id: application.id,
+        status: 'approved'
+      }
+    });
+  } catch (error: any) {
+    console.error('Verify application and create provider error:', error);
+    res.status(500).json({ 
+      message: 'Server error', 
+      error: error.message 
+    });
+  }
+};
+
+// Get all service provider applications (for CMS)
+exports.getAllApplications = async (req: any, res: any) => {
+  try {
+    const { status, page = 1, limit = 50 } = req.query;
+    const pageNum = parseInt(page as string) || 1;
+    const limitNum = parseInt(limit as string) || 50;
+    const skip = (pageNum - 1) * limitNum;
+
+    // Build where clause
+    const where: any = {};
+    if (status) {
+      where.status = status;
+    }
+
+    // Get applications with pagination
+    const [applications, total] = await Promise.all([
+      prisma.serviceProviderApplication.findMany({
+        where,
+        skip,
+        take: limitNum,
+        orderBy: {
+          createdAt: 'desc'
+        },
+        include: {
+          provider: {
+            include: {
+              user: {
+                select: {
+                  id: true,
+                  email: true,
+                  firstName: true,
+                  lastName: true
+                }
+              }
+            }
+          }
+        }
+      }),
+      prisma.serviceProviderApplication.count({ where })
+    ]);
+
+    res.json({
+      applications,
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total,
+        totalPages: Math.ceil(total / limitNum)
+      }
+    });
+  } catch (error: any) {
+    console.error('Get all applications error:', error);
+    res.status(500).json({ 
+      message: 'Server error', 
+      error: error.message 
+    });
+  }
+};
+
+// Get single application by ID (for CMS)
+exports.getApplicationById = async (req: any, res: any) => {
+  try {
+    const { applicationId } = req.params;
+
+    const application = await prisma.serviceProviderApplication.findUnique({
+      where: { id: applicationId },
+      include: {
+        provider: {
+          include: {
+            user: {
+              select: {
+                id: true,
+                email: true,
+                firstName: true,
+                lastName: true,
+                phone: true
+              }
+            }
+          }
+        }
+      }
+    });
+
+    if (!application) {
+      return res.status(404).json({ message: 'Application not found' });
+    }
+
+    res.json(application);
+  } catch (error: any) {
+    console.error('Get application by ID error:', error);
+    res.status(500).json({ 
+      message: 'Server error', 
+      error: error.message 
+    });
+  }
+};
+
+// Reject application (for CMS)
+exports.rejectApplication = async (req: any, res: any) => {
+  try {
+    const { applicationId } = req.params;
+    const { rejectionReason } = req.body;
+    const adminId = req.user.id;
+
+    if (!rejectionReason || rejectionReason.trim().length === 0) {
+      return res.status(400).json({ 
+        message: 'Rejection reason is required' 
+      });
+    }
+
+    const application = await prisma.serviceProviderApplication.findUnique({
+      where: { id: applicationId }
+    });
+
+    if (!application) {
+      return res.status(404).json({ message: 'Application not found' });
+    }
+
+    if (application.status !== 'pending') {
+      return res.status(400).json({ 
+        message: `Application is already ${application.status}. Cannot reject.` 
+      });
+    }
+
+    // Update application status
+    const updatedApplication = await prisma.serviceProviderApplication.update({
+      where: { id: applicationId },
+      data: {
+        status: 'rejected',
+        reviewedBy: adminId,
+        reviewedAt: new Date(),
+        rejectionReason: rejectionReason.trim()
+      }
+    });
+
+    res.json({
+      message: 'Application rejected successfully',
+      application: updatedApplication
+    });
+  } catch (error: any) {
+    console.error('Reject application error:', error);
     res.status(500).json({ 
       message: 'Server error', 
       error: error.message 
