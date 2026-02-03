@@ -4,6 +4,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 const database_1 = __importDefault(require("../lib/database"));
+const { generateUserId } = require('../lib/spanaIdGenerator');
 // import { syncUserToMongo } from '../lib/mongoSync';
 const jwt = require('jsonwebtoken');
 const { validationResult } = require('express-validator');
@@ -78,10 +79,15 @@ exports.register = async (req, res) => {
         // Note: Provider-specific fields are now handled in the ServiceProvider model
         // Create new user
         console.log('Creating user with data:', userData);
+        // Generate SPANA ID (format: SPN-abc123) - use as actual ID
+        const spanaUserId = await generateUserId();
         const user = await database_1.default.user.create({
-            data: userData
+            data: {
+                ...userData,
+                id: spanaUserId // Use SPANA ID as the actual ID
+            }
         });
-        console.log('User created:', user.id);
+        console.log('User created with SPANA ID:', user.id);
         // Create role-specific record
         if (finalRole === 'customer') {
             console.log('Creating customer record for user:', user.id);
@@ -123,13 +129,14 @@ exports.register = async (req, res) => {
                 serviceProvider: true
             }
         });
-        // Shape response by role
+        // Shape response by role - user.id is now SPANA ID
         let userResponse;
         if (user.role === 'customer' && userWithRole?.customer) {
             const { id, email, firstName, lastName, phone, role, isEmailVerified, isPhoneVerified, profileImage, location, walletBalance, status, createdAt, updatedAt } = user;
             const { favouriteProviders, totalBookings, ratingGivenAvg } = userWithRole.customer;
             userResponse = {
-                _id: id, email, firstName, lastName, phone, role, isVerified: false, isEmailVerified, isPhoneVerified,
+                _id: id, id: id,
+                email, firstName, lastName, phone, role, isVerified: false, isEmailVerified, isPhoneVerified,
                 profileImage, location, walletBalance, status,
                 customerDetails: { favouriteProviders, totalBookings, ratingGivenAvg },
                 createdAt, updatedAt, __v: 0
@@ -139,7 +146,8 @@ exports.register = async (req, res) => {
             const { id, email, firstName, lastName, phone, role, isEmailVerified, isPhoneVerified, profileImage, location, walletBalance, status, createdAt, updatedAt } = user;
             const { skills, experienceYears, isOnline, rating, totalReviews, isVerified, isIdentityVerified, availability, serviceAreaRadius, serviceAreaCenter, isProfileComplete } = userWithRole.serviceProvider;
             userResponse = {
-                _id: id, email, firstName, lastName, phone, role, isVerified, isEmailVerified, isPhoneVerified, isIdentityVerified,
+                _id: id, id: id,
+                email, firstName, lastName, phone, role, isVerified, isEmailVerified, isPhoneVerified, isIdentityVerified,
                 profileImage, skills, experienceYears, isOnline, rating, totalReviews, isProfileComplete,
                 availability, serviceArea: { radiusInKm: serviceAreaRadius, baseLocation: serviceAreaCenter },
                 location, walletBalance, status, createdAt, updatedAt, __v: 0
@@ -148,7 +156,8 @@ exports.register = async (req, res) => {
         else {
             // Fallback for admin or other roles
             userResponse = {
-                _id: user.id, email: user.email, firstName: user.firstName, lastName: user.lastName,
+                _id: user.id, id: user.id,
+                email: user.email, firstName: user.firstName, lastName: user.lastName,
                 phone: user.phone, role: user.role, isVerified: false, isEmailVerified: user.isEmailVerified,
                 isPhoneVerified: user.isPhoneVerified, profileImage: user.profileImage, location: user.location,
                 walletBalance: user.walletBalance, status: user.status, createdAt: user.createdAt,
@@ -162,15 +171,25 @@ exports.register = async (req, res) => {
             // Send verification email (for providers and admins) - only if requested
             if (user.role === 'service_provider') {
                 try {
+                    // Service provider registration token - never expires if unused, 30-min countdown starts on first use
+                    // Note: For self-registration, user already set their own password, so no temporary password needed
                     const verificationToken = nodeCrypto.randomBytes(32).toString('hex');
                     await database_1.default.serviceProvider.update({
                         where: { userId: user.id },
                         data: {
                             verificationToken,
-                            verificationExpires: new Date(Date.now() + 24 * 60 * 60 * 1000)
+                            verificationExpires: null, // No expiration until first use
+                            verificationTokenFirstUsedAt: null // Will be set when token is first accessed
                         }
                     });
-                    const verificationLink = `${process.env.CLIENT_URL}/verify-provider?token=${verificationToken}&uid=${user.id}`;
+                    // Build verification link using Render backend URL (preferred) with safe fallbacks
+                    let baseUrl = process.env.CLIENT_URL || process.env.EXTERNAL_API_URL;
+                    // If CLIENT_URL/EXTERNAL_API_URL are not set or invalid, fall back to Render URL
+                    if (!baseUrl || baseUrl === '*' || !baseUrl.startsWith('http')) {
+                        baseUrl = 'https://spana-server-5bhu.onrender.com';
+                    }
+                    const cleanBaseUrl = baseUrl.replace(/\/$/, '');
+                    const verificationLink = `${cleanBaseUrl}/verify-provider?token=${verificationToken}&uid=${user.id}`;
                     sendVerificationEmail(user, verificationLink).catch(() => { });
                 }
                 catch (_) { }
@@ -186,15 +205,22 @@ exports.register = async (req, res) => {
                             verificationExpires: new Date(Date.now() + 24 * 60 * 60 * 1000)
                         }
                     });
-                    let baseUrl = process.env.CLIENT_URL || process.env.EXTERNAL_API_URL;
+                    // Prioritize EXTERNAL_API_URL to avoid localhost
+                    let baseUrl = process.env.EXTERNAL_API_URL;
                     if (!baseUrl || baseUrl === '*' || !baseUrl.startsWith('http')) {
-                        if (process.env.EXTERNAL_API_URL && process.env.EXTERNAL_API_URL.startsWith('http')) {
+                        if (process.env.CLIENT_URL && process.env.CLIENT_URL.startsWith('http') && process.env.CLIENT_URL !== '*') {
+                            baseUrl = process.env.CLIENT_URL;
+                        }
+                        else if (process.env.EXTERNAL_API_URL && process.env.EXTERNAL_API_URL.startsWith('http')) {
                             try {
                                 baseUrl = new URL(process.env.EXTERNAL_API_URL).origin;
                             }
-                            catch (e) { }
+                            catch (e) {
+                                const port = process.env.PORT || '5003';
+                                baseUrl = `http://localhost:${port}`;
+                            }
                         }
-                        if (!baseUrl || baseUrl === '*' || !baseUrl.startsWith('http')) {
+                        else {
                             const port = process.env.PORT || '5003';
                             baseUrl = `http://localhost:${port}`;
                         }
@@ -208,8 +234,23 @@ exports.register = async (req, res) => {
                 catch (_) { }
             }
             // Send welcome email - only if requested
+            // For providers, include verification token and uid so the "Complete Profile" button works
             try {
-                sendWelcomeEmail(user).catch(() => { });
+                if (user.role === 'service_provider') {
+                    const provider = await database_1.default.serviceProvider.findUnique({
+                        where: { userId: user.id }
+                    });
+                    if (provider?.verificationToken) {
+                        // Pass token and uid to welcome email for provider
+                        sendWelcomeEmail(user, { token: provider.verificationToken, uid: user.id }).catch(() => { });
+                    }
+                    else {
+                        sendWelcomeEmail(user).catch(() => { });
+                    }
+                }
+                else {
+                    sendWelcomeEmail(user).catch(() => { });
+                }
             }
             catch (_) { }
         }
@@ -232,113 +273,23 @@ exports.register = async (req, res) => {
 // Login user
 exports.login = async (req, res) => {
     try {
-        const { email } = req.body;
-        // Admin login only requires email (password-less for @spana.co.za)
-        if (!isSpanaAdminEmail(email)) {
-            // Regular user login requires password
-            const { password } = req.body;
-            if (!password) {
-                return res.status(400).json({ message: 'Password is required' });
-            }
-            let user = await database_1.default.user.findUnique({
-                where: { email: email.toLowerCase() },
-                include: { customer: true, serviceProvider: true }
-            });
-            if (!user) {
-                return res.status(400).json({ message: 'Invalid credentials' });
-            }
-            // Check password
-            const isMatch = await bcrypt.compare(password, user.password);
-            if (!isMatch) {
-                return res.status(400).json({ message: 'Invalid credentials' });
-            }
-            // Generate token for non-admin users (7 days expiry)
-            const token = generateToken(user.id);
-            // Log activity and update lastLoginAt
-            try {
-                await database_1.default.activity.create({
-                    data: {
-                        userId: user.id,
-                        actionType: 'login'
-                    }
-                });
-            }
-            catch (_) { }
-            try {
-                await database_1.default.user.update({
-                    where: { id: user.id },
-                    data: { lastLoginAt: new Date() }
-                });
-            }
-            catch (_) { }
-            // Build user response based on role
-            let userResponse;
-            if (user.role === 'customer' && user.customer) {
-                const { id, email, firstName, lastName, phone, role, isEmailVerified, isPhoneVerified, profileImage, location, walletBalance, status, createdAt, updatedAt } = user;
-                userResponse = {
-                    _id: id, email, firstName, lastName, phone, role, isEmailVerified, isPhoneVerified,
-                    profileImage, location, walletBalance, status, createdAt, updatedAt, __v: 0
-                };
-            }
-            else if (user.role === 'service_provider' && user.serviceProvider) {
-                const { id, email, firstName, lastName, phone, role, isEmailVerified, isPhoneVerified, profileImage, location, walletBalance, status, createdAt, updatedAt } = user;
-                userResponse = {
-                    _id: id, email, firstName, lastName, phone, role, isEmailVerified, isPhoneVerified,
-                    profileImage, location, walletBalance, status, createdAt, updatedAt, __v: 0
-                };
-            }
-            else {
-                userResponse = {
-                    _id: user.id, email: user.email, firstName: user.firstName, lastName: user.lastName,
-                    phone: user.phone, role: user.role, isEmailVerified: user.isEmailVerified,
-                    isPhoneVerified: user.isPhoneVerified, profileImage: user.profileImage, location: user.location,
-                    walletBalance: user.walletBalance, status: user.status, createdAt: user.createdAt,
-                    updatedAt: user.updatedAt, __v: 0
-                };
-            }
-            return res.status(200).json({
-                message: 'Login successful',
-                token,
-                user: userResponse
-            });
+        const { email, password } = req.body;
+        if (!email) {
+            return res.status(400).json({ message: 'Email is required' });
         }
-        // Admin login flow (email-only for @spana.co.za)
+        if (!password) {
+            return res.status(400).json({ message: 'Password is required' });
+        }
+        // Look up user by email
         let user = await database_1.default.user.findUnique({
             where: { email: email.toLowerCase() },
             include: { customer: true, serviceProvider: true }
         });
-        // Auto-register admin silently if doesn't exist
-        if (!user && isSpanaAdminEmail(email)) {
-            const firstName = extractFirstNameFromEmail(email);
-            const tempPassword = nodeCrypto.randomBytes(32).toString('hex'); // Random password, not used
-            const hashedPassword = await bcrypt.hash(tempPassword, 12);
-            user = await database_1.default.user.create({
-                data: {
-                    email: email.toLowerCase(),
-                    password: hashedPassword, // Random password, admin uses OTP only
-                    firstName,
-                    lastName: '',
-                    phone: '',
-                    role: 'admin',
-                    isEmailVerified: false
-                },
-                include: { customer: true, serviceProvider: true }
-            });
-            // Create admin verification record
-            try {
-                await database_1.default.adminVerification.create({
-                    data: {
-                        adminEmail: email.toLowerCase(),
-                        verified: false
-                    }
-                });
-            }
-            catch (err) {
-                console.error('Error creating admin verification record:', err);
-            }
+        if (!user) {
+            return res.status(400).json({ message: 'Invalid credentials' });
         }
         // Auto-correct role for existing users with @spana.co.za email
-        if (user && isSpanaAdminEmail(email) && user.role !== 'admin') {
+        if (isSpanaAdminEmail(email) && user.role !== 'admin') {
             console.log(`Auto-correcting role for ${email} from ${user.role} to admin`);
             user = await database_1.default.user.update({
                 where: { id: user.id },
@@ -360,10 +311,12 @@ exports.login = async (req, res) => {
                 console.error('Error creating admin verification record:', err);
             }
         }
-        if (!user) {
-            return res.status(400).json({ message: 'Invalid email address' });
+        // Check password for ALL users (including admins)
+        const isMatch = await bcrypt.compare(password, user.password);
+        if (!isMatch) {
+            return res.status(400).json({ message: 'Invalid credentials' });
         }
-        // For admin users, automatically generate and send OTP
+        // Admin login flow: require correct password + OTP for @spana.co.za
         if (user.role === 'admin' && isSpanaAdminEmail(user.email)) {
             const { sendAdminOTPEmail } = require('../config/mailer');
             // Generate 6-digit OTP
@@ -388,20 +341,34 @@ exports.login = async (req, res) => {
                     verificationExpires: new Date(Date.now() + 24 * 60 * 60 * 1000) // 24 hours
                 }
             });
-            // Get base URL for verification link
-            let baseUrl = process.env.EXTERNAL_API_URL || process.env.CLIENT_URL;
-            if (req && req.headers && req.headers.host) {
-                const protocol = req.headers['x-forwarded-proto'] || (req.secure ? 'https' : 'http');
-                baseUrl = `${protocol}://${req.headers.host}`;
+            // Get base URL for verification link - prioritize EXTERNAL_API_URL to avoid localhost
+            let baseUrl = process.env.EXTERNAL_API_URL;
+            // Only use request headers if EXTERNAL_API_URL is not set and not in production
+            if (!baseUrl || baseUrl === '*' || !baseUrl.startsWith('http')) {
+                if (process.env.CLIENT_URL && process.env.CLIENT_URL.startsWith('http') && process.env.CLIENT_URL !== '*') {
+                    baseUrl = process.env.CLIENT_URL;
+                }
+                else if (req && req.headers && req.headers.host && process.env.NODE_ENV !== 'production') {
+                    const protocol = req.headers['x-forwarded-proto'] || (req.secure ? 'https' : 'http');
+                    const host = req.headers.host;
+                    // Don't use localhost in production
+                    if (!host.includes('localhost') && !host.includes('127.0.0.1')) {
+                        baseUrl = `${protocol}://${host}`;
+                    }
+                }
             }
-            else if (!baseUrl || baseUrl === '*' || !baseUrl.startsWith('http')) {
+            // Final fallback: use EXTERNAL_API_URL if available, otherwise localhost (dev only)
+            if (!baseUrl || baseUrl === '*' || !baseUrl.startsWith('http')) {
                 if (process.env.EXTERNAL_API_URL && process.env.EXTERNAL_API_URL.startsWith('http')) {
                     try {
                         baseUrl = new URL(process.env.EXTERNAL_API_URL).origin;
                     }
-                    catch (e) { }
+                    catch (e) {
+                        const port = process.env.PORT || '5003';
+                        baseUrl = `http://localhost:${port}`;
+                    }
                 }
-                if (!baseUrl || baseUrl === '*' || !baseUrl.startsWith('http')) {
+                else {
                     const port = process.env.PORT || '5003';
                     baseUrl = `http://localhost:${port}`;
                 }
@@ -865,5 +832,74 @@ exports.getMe = async (req, res) => {
     catch (error) {
         console.error(error);
         res.status(500).json({ message: 'Server error' });
+    }
+};
+// Submit service provider application (public endpoint)
+exports.submitApplication = async (req, res) => {
+    try {
+        const { email, firstName, lastName, phone, skills, experienceYears, motivation, location, documents } = req.body;
+        // Validate required fields
+        if (!email || !firstName || !lastName || !phone) {
+            return res.status(400).json({
+                message: 'Missing required fields: email, firstName, lastName, phone'
+            });
+        }
+        // Check if application already exists for this email
+        const existingApplication = await database_1.default.serviceProviderApplication.findUnique({
+            where: { email: email.toLowerCase() }
+        });
+        if (existingApplication) {
+            return res.status(400).json({
+                message: 'An application already exists for this email address'
+            });
+        }
+        // Check if user already exists
+        const existingUser = await database_1.default.user.findUnique({
+            where: { email: email.toLowerCase() }
+        });
+        if (existingUser) {
+            return res.status(400).json({
+                message: 'A user account already exists with this email address'
+            });
+        }
+        // Create application
+        console.log(`[Application] Submitting application for ${email}`);
+        console.log(`[Application] Documents received: ${documents ? (Array.isArray(documents) ? documents.length : 'not array') : 'null'}`);
+        if (documents && Array.isArray(documents)) {
+            documents.forEach((doc, index) => {
+                console.log(`[Application] Document ${index + 1}: ${doc.name} (${doc.type}) - ${doc.url}`);
+            });
+        }
+        const application = await database_1.default.serviceProviderApplication.create({
+            data: {
+                email: email.toLowerCase(),
+                firstName,
+                lastName,
+                phone,
+                skills: Array.isArray(skills) ? skills : [],
+                experienceYears: parseInt(experienceYears) || 0,
+                motivation: motivation || null,
+                location: location || null,
+                documents: Array.isArray(documents) && documents.length > 0 ? documents : null,
+                status: 'pending'
+            }
+        });
+        console.log(`[Application] Application created: ${application.id}`);
+        console.log(`[Application] Documents saved: ${application.documents ? 'Yes' : 'No'}`);
+        res.status(201).json({
+            message: 'Application submitted successfully. We will review your application and contact you soon.',
+            application: {
+                id: application.id,
+                email: application.email,
+                status: application.status
+            }
+        });
+    }
+    catch (error) {
+        console.error('Submit application error:', error);
+        res.status(500).json({
+            message: 'Server error',
+            error: error.message
+        });
     }
 };

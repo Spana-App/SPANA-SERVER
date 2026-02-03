@@ -13,7 +13,7 @@ import axios from 'axios';
 import { PrismaClient } from '@prisma/client';
 
 const prisma = new PrismaClient();
-const BASE_URL = 'http://localhost:5003';
+const BASE_URL = process.env.PRODUCTION_URL || 'https://spana-server-5bhu.onrender.com';
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || process.argv[2] || '';
 
 async function approveAllApplications() {

@@ -1,0 +1,120 @@
+/**
+ * Cleanup All Test Data
+ * Removes all E2E test users, orphaned records, and test applications
+ */
+
+import prisma from '../lib/database';
+
+async function cleanupAllTestData() {
+  console.log('🧹 Cleaning up ALL test data and orphaned records...\n');
+
+  try {
+    // 1. Delete all E2E test users and their related data
+    console.log('📝 Removing E2E test users...');
+    const testUsers = await prisma.user.findMany({
+      where: {
+        OR: [
+          { email: { contains: 'e2e-' } },
+          { email: { contains: 'test-login-' } },
+          { email: { contains: 'example.com' } }
+        ]
+      }
+    });
+    
+    if (testUsers.length > 0) {
+      const testUserIds = testUsers.map(u => u.id);
+      
+      // Delete related customers
+      const customersDeleted = await prisma.customer.deleteMany({
+        where: { userId: { in: testUserIds } }
+      });
+      console.log(`   ├─ Deleted ${customersDeleted.count} test customers`);
+      
+      // Delete related providers (and their dependencies)
+      const testProviders = await prisma.serviceProvider.findMany({
+        where: { userId: { in: testUserIds } }
+      });
+      
+      if (testProviders.length > 0) {
+        const testProviderIds = testProviders.map(p => p.id);
+        
+        // Delete provider-related data
+        await prisma.service.deleteMany({ where: { providerId: { in: testProviderIds } } });
+        await prisma.document.deleteMany({ where: { providerId: { in: testProviderIds } } });
+        await prisma.serviceProvider.deleteMany({ where: { id: { in: testProviderIds } } });
+        
+        console.log(`   ├─ Deleted ${testProviders.length} test providers + related data`);
+      }
+      
+      // Delete test users
+      const usersDeleted = await prisma.user.deleteMany({
+        where: { id: { in: testUserIds } }
+      });
+      console.log(`   └─ Deleted ${usersDeleted.count} test users ✅\n`);
+    } else {
+      console.log(`   No test users found ✅\n`);
+    }
+
+    // 2. Clean up orphaned records
+    console.log('📝 Cleaning up orphaned records...');
+    const allUsers = await prisma.user.findMany({ select: { id: true } });
+    const validUserIds = new Set(allUsers.map(u => u.id));
+    
+    // Find orphaned customers
+    const allCustomers = await prisma.customer.findMany();
+    const orphanedCustomers = allCustomers.filter(c => !validUserIds.has(c.userId));
+    
+    if (orphanedCustomers.length > 0) {
+      const orphanedCustomerIds = orphanedCustomers.map(c => c.id);
+      
+      // Delete orphaned bookings
+      await prisma.booking.deleteMany({
+        where: { customerId: { in: orphanedCustomerIds } }
+      });
+      
+      // Delete orphaned customers
+      await prisma.customer.deleteMany({
+        where: { id: { in: orphanedCustomerIds } }
+      });
+      
+      console.log(`   ├─ Deleted ${orphanedCustomers.length} orphaned customers ✅`);
+    }
+    
+    // Find orphaned providers
+    const allProviders = await prisma.serviceProvider.findMany();
+    const orphanedProviders = allProviders.filter(p => !validUserIds.has(p.userId));
+    
+    if (orphanedProviders.length > 0) {
+      const orphanedProviderIds = orphanedProviders.map(p => p.id);
+      
+      // Delete orphaned provider data
+      await prisma.service.deleteMany({ where: { providerId: { in: orphanedProviderIds } } });
+      await prisma.document.deleteMany({ where: { providerId: { in: orphanedProviderIds } } });
+      await prisma.serviceProvider.deleteMany({ where: { id: { in: orphanedProviderIds } } });
+      
+      console.log(`   └─ Deleted ${orphanedProviders.length} orphaned providers ✅\n`);
+    }
+
+    // 3. Final verification
+    console.log('📝 Final verification...');
+    const finalCustomers = await prisma.customer.findMany();
+    const finalProviders = await prisma.serviceProvider.findMany();
+    const finalOrphanedCustomers = finalCustomers.filter(c => !validUserIds.has(c.userId));
+    const finalOrphanedProviders = finalProviders.filter(p => !validUserIds.has(p.userId));
+    
+    console.log(`   Customers: ${finalCustomers.length} total, ${finalOrphanedCustomers.length} orphaned`);
+    console.log(`   Providers: ${finalProviders.length} total, ${finalOrphanedProviders.length} orphaned`);
+    
+    if (finalOrphanedCustomers.length === 0 && finalOrphanedProviders.length === 0) {
+      console.log('\n✅ Database is clean! No orphaned records.');
+    }
+
+  } catch (error: any) {
+    console.error('\n❌ Cleanup failed:', error.message);
+    process.exit(1);
+  } finally {
+    await prisma.$disconnect();
+  }
+}
+
+cleanupAllTestData();

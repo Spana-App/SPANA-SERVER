@@ -7,19 +7,80 @@ const database_1 = __importDefault(require("../lib/database"));
 // Get overall platform statistics
 exports.getPlatformStats = async (req, res) => {
     try {
-        const [totalUsers, totalProviders, totalCustomers, totalServices, totalBookings, completedBookings, activeProviders, totalRevenue] = await Promise.all([
-            database_1.default.user.count(),
-            database_1.default.serviceProvider.count(),
-            database_1.default.customer.count(),
-            database_1.default.service.count({ where: { adminApproved: true } }),
-            database_1.default.booking.count(),
-            database_1.default.booking.count({ where: { status: 'completed' } }),
-            database_1.default.serviceProvider.count({ where: { applicationStatus: 'active', isVerified: true } }),
-            database_1.default.payment.aggregate({
+        // Execute queries with error handling for each
+        let totalUsers = 0;
+        let totalProviders = 0;
+        let totalCustomers = 0;
+        let totalServices = 0;
+        let totalBookings = 0;
+        let completedBookings = 0;
+        let activeProviders = 0;
+        let totalRevenue = 0;
+        try {
+            totalUsers = await database_1.default.user.count();
+        }
+        catch (err) {
+            console.warn('Error counting users:', err.message);
+        }
+        try {
+            totalProviders = await database_1.default.serviceProvider.count();
+        }
+        catch (err) {
+            console.warn('Error counting providers:', err.message);
+        }
+        try {
+            totalCustomers = await database_1.default.customer.count();
+        }
+        catch (err) {
+            console.warn('Error counting customers:', err.message);
+        }
+        try {
+            totalServices = await database_1.default.service.count({ where: { adminApproved: true } });
+        }
+        catch (err) {
+            console.warn('Error counting services:', err.message);
+        }
+        try {
+            totalBookings = await database_1.default.booking.count();
+        }
+        catch (err) {
+            console.warn('Error counting bookings:', err.message);
+        }
+        try {
+            completedBookings = await database_1.default.booking.count({ where: { status: 'completed' } });
+        }
+        catch (err) {
+            console.warn('Error counting completed bookings:', err.message);
+        }
+        try {
+            activeProviders = await database_1.default.serviceProvider.count({
+                where: { applicationStatus: 'active', isVerified: true }
+            });
+        }
+        catch (err) {
+            console.warn('Error counting active providers:', err.message);
+        }
+        try {
+            const revenueResult = await database_1.default.payment.aggregate({
                 where: { status: 'completed' },
                 _sum: { amount: true }
-            })
-        ]);
+            });
+            totalRevenue = revenueResult._sum?.amount || 0;
+        }
+        catch (err) {
+            console.warn('Error calculating revenue:', err.message);
+            // Fallback: calculate from bookings if payment table has issues
+            try {
+                const bookings = await database_1.default.booking.findMany({
+                    where: { status: 'completed' },
+                    select: { calculatedPrice: true, basePrice: true }
+                });
+                totalRevenue = bookings.reduce((sum, b) => sum + (b.calculatedPrice || b.basePrice || 0), 0);
+            }
+            catch (fallbackErr) {
+                console.warn('Error in revenue fallback calculation:', fallbackErr.message);
+            }
+        }
         res.json({
             users: {
                 total: totalUsers,
@@ -33,16 +94,19 @@ exports.getPlatformStats = async (req, res) => {
             bookings: {
                 total: totalBookings,
                 completed: completedBookings,
-                completionRate: totalBookings > 0 ? ((completedBookings / totalBookings) * 100).toFixed(2) : 0
+                completionRate: totalBookings > 0 ? ((completedBookings / totalBookings) * 100).toFixed(2) : '0.00'
             },
             revenue: {
-                total: totalRevenue._sum.amount || 0
+                total: totalRevenue
             }
         });
     }
     catch (error) {
         console.error('Get platform stats error', error);
-        res.status(500).json({ message: 'Server error' });
+        res.status(500).json({
+            message: 'Server error',
+            error: process.env.NODE_ENV === 'development' ? error.message : undefined
+        });
     }
 };
 // Get service provider statistics by location
@@ -71,33 +135,58 @@ exports.getProviderStatsByLocation = async (req, res) => {
         // Group by location (simplified - using coordinates)
         const locationStats = {};
         providers.forEach(provider => {
-            if (provider.user.location) {
-                const loc = provider.user.location;
-                const city = loc.address ? loc.address.split(',')[loc.address.split(',').length - 1].trim() : 'Unknown';
-                if (!locationStats[city]) {
-                    locationStats[city] = {
-                        city,
-                        providerCount: 0,
-                        totalServices: 0,
-                        completedBookings: 0,
-                        averageRating: 0
-                    };
+            try {
+                if (provider.user && provider.user.location) {
+                    const loc = provider.user.location;
+                    if (loc && loc.address && typeof loc.address === 'string') {
+                        const city = loc.address.split(',')[loc.address.split(',').length - 1].trim() || 'Unknown';
+                        if (!locationStats[city]) {
+                            locationStats[city] = {
+                                city,
+                                providerCount: 0,
+                                totalServices: 0,
+                                completedBookings: 0,
+                                averageRating: 0
+                            };
+                        }
+                        locationStats[city].providerCount++;
+                        locationStats[city].totalServices += (provider.services?.length || 0);
+                        locationStats[city].completedBookings += (provider.services || []).reduce((sum, s) => sum + (s.bookings?.length || 0), 0);
+                    }
                 }
-                locationStats[city].providerCount++;
-                locationStats[city].totalServices += provider.services.length;
-                locationStats[city].completedBookings += provider.services.reduce((sum, s) => sum + s.bookings.length, 0);
+            }
+            catch (err) {
+                // Skip providers with invalid location data
+                console.warn('Skipping provider with invalid location data:', provider.id);
             }
         });
         // Calculate average ratings
         Object.keys(locationStats).forEach(city => {
-            const cityProviders = providers.filter(p => {
-                const loc = p.user.location;
-                const providerCity = loc.address ? loc.address.split(',')[loc.address.split(',').length - 1].trim() : 'Unknown';
-                return providerCity === city;
-            });
-            if (cityProviders.length > 0) {
-                const avgRating = cityProviders.reduce((sum, p) => sum + p.rating, 0) / cityProviders.length;
-                locationStats[city].averageRating = avgRating.toFixed(2);
+            try {
+                const cityProviders = providers.filter(p => {
+                    try {
+                        if (!p.user || !p.user.location)
+                            return false;
+                        const loc = p.user.location;
+                        if (!loc || !loc.address || typeof loc.address !== 'string')
+                            return false;
+                        const providerCity = loc.address.split(',')[loc.address.split(',').length - 1].trim();
+                        return providerCity === city;
+                    }
+                    catch {
+                        return false;
+                    }
+                });
+                if (cityProviders.length > 0) {
+                    const ratings = cityProviders.map(p => p.rating || 0).filter(r => r > 0);
+                    if (ratings.length > 0) {
+                        const avgRating = ratings.reduce((sum, r) => sum + r, 0) / ratings.length;
+                        locationStats[city].averageRating = parseFloat(avgRating.toFixed(2));
+                    }
+                }
+            }
+            catch (err) {
+                console.warn('Error calculating average rating for city:', city, err);
             }
         });
         res.json({
@@ -110,8 +199,8 @@ exports.getProviderStatsByLocation = async (req, res) => {
         res.status(500).json({ message: 'Server error' });
     }
 };
-// Get service category statistics
-exports.getServiceCategoryStats = async (req, res) => {
+// Get service statistics (category removed)
+exports.getServiceStats = async (req, res) => {
     try {
         const services = await database_1.default.service.findMany({
             where: { adminApproved: true },
@@ -121,37 +210,23 @@ exports.getServiceCategoryStats = async (req, res) => {
                 }
             }
         });
-        const categoryStats = {};
-        services.forEach(service => {
-            if (!categoryStats[service.category]) {
-                categoryStats[service.category] = {
-                    category: service.category,
-                    serviceCount: 0,
-                    totalBookings: 0,
-                    totalRevenue: 0,
-                    averagePrice: 0
-                };
-            }
-            categoryStats[service.category].serviceCount++;
-            categoryStats[service.category].totalBookings += service.bookings.length;
-            const categoryRevenue = service.bookings.reduce((sum, b) => sum + (b.calculatedPrice || b.basePrice || 0), 0);
-            categoryStats[service.category].totalRevenue += categoryRevenue;
-        });
-        // Calculate average prices
-        Object.keys(categoryStats).forEach(category => {
-            const categoryServices = services.filter(s => s.category === category);
-            if (categoryServices.length > 0) {
-                const avgPrice = categoryServices.reduce((sum, s) => sum + s.price, 0) / categoryServices.length;
-                categoryStats[category].averagePrice = avgPrice.toFixed(2);
-            }
-        });
+        const totalServices = services.length;
+        const totalBookings = services.reduce((sum, s) => sum + s.bookings.length, 0);
+        const totalRevenue = services.reduce((sum, s) => {
+            return sum + s.bookings.reduce((bSum, b) => bSum + (b.calculatedPrice || b.basePrice || 0), 0);
+        }, 0);
+        const averagePrice = services.length > 0
+            ? (services.reduce((sum, s) => sum + s.price, 0) / services.length).toFixed(2)
+            : 0;
         res.json({
-            categories: Object.values(categoryStats),
-            total: Object.keys(categoryStats).length
+            totalServices,
+            totalBookings,
+            totalRevenue,
+            averagePrice
         });
     }
     catch (error) {
-        console.error('Get service category stats error', error);
+        console.error('Get service stats error', error);
         res.status(500).json({ message: 'Server error' });
     }
 };
@@ -267,7 +342,9 @@ exports.getRevenueStats = async (req, res) => {
                     include: {
                         service: {
                             select: {
-                                category: true
+                                id: true,
+                                title: true,
+                                price: true
                             }
                         }
                     }
@@ -277,14 +354,21 @@ exports.getRevenueStats = async (req, res) => {
         const totalRevenue = payments.reduce((sum, p) => sum + p.amount, 0);
         const totalCommission = payments.reduce((sum, p) => sum + (p.commissionAmount || 0), 0);
         const totalPayouts = payments.reduce((sum, p) => sum + (p.providerPayout || 0), 0);
-        // Revenue by category
-        const revenueByCategory = {};
+        // Revenue by service (category removed)
+        const revenueByService = {};
         payments.forEach(payment => {
-            const category = payment.booking.service.category;
-            if (!revenueByCategory[category]) {
-                revenueByCategory[category] = 0;
+            if (payment.booking?.service) {
+                const serviceId = payment.booking.service.id;
+                const serviceTitle = payment.booking.service.title;
+                if (!revenueByService[serviceId]) {
+                    revenueByService[serviceId] = {
+                        serviceId,
+                        serviceTitle,
+                        revenue: 0
+                    };
+                }
+                revenueByService[serviceId].revenue += payment.amount;
             }
-            revenueByCategory[category] += payment.amount;
         });
         res.json({
             total: {
@@ -292,7 +376,7 @@ exports.getRevenueStats = async (req, res) => {
                 commission: totalCommission,
                 payouts: totalPayouts
             },
-            byCategory: revenueByCategory,
+            byService: Object.values(revenueByService),
             commissionRate: totalRevenue > 0 ? ((totalCommission / totalRevenue) * 100).toFixed(2) : 0
         });
     }

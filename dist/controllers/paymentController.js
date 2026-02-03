@@ -4,6 +4,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 const database_1 = __importDefault(require("../lib/database"));
+const idGenerator_1 = require("../lib/idGenerator");
 const { sendReceiptEmail } = require('../config/mailer');
 const workflowClient = require('../lib/workflowClient');
 const crypto = require('crypto');
@@ -39,11 +40,13 @@ exports.createPaymentIntent = async (req, res) => {
         if (!booking) {
             return res.status(404).json({ message: 'Booking not found' });
         }
-        if (booking.requestStatus !== 'accepted') {
-            return res.status(400).json({ message: 'Booking must be accepted by provider first' });
-        }
-        if (booking.paymentStatus === 'paid_to_escrow') {
+        // Allow payment when booking is pending_payment (customer pays first, then provider accepts)
+        if (booking.status !== 'pending_payment' && booking.paymentStatus === 'paid_to_escrow') {
             return res.status(400).json({ message: 'Payment already processed' });
+        }
+        // Payment should happen BEFORE provider acceptance (Uber-style: pay first, then provider accepts)
+        if (booking.paymentStatus === 'paid_to_escrow') {
+            return res.status(400).json({ message: 'Payment already completed' });
         }
         // Calculate commission (15% default) - commission on base amount only, tip goes 100% to provider
         const baseAmount = parseFloat(amount);
@@ -59,8 +62,10 @@ exports.createPaymentIntent = async (req, res) => {
         if (!customer) {
             return res.status(400).json({ message: 'Customer profile not found' });
         }
+        const referenceNumber = await (0, idGenerator_1.generatePaymentReferenceAsync)();
         const payment = await database_1.default.payment.create({
             data: {
+                referenceNumber, // SPANA-PY-000001
                 customerId: customer.id,
                 bookingId,
                 amount: totalAmount, // Total includes tip
@@ -73,8 +78,11 @@ exports.createPaymentIntent = async (req, res) => {
                 tipAmount: tip
             }
         });
-        // Payment simulation mode (for development/testing when PayFast not configured)
-        const simulatePayment = !PAYFAST_MERCHANT_ID || process.env.NODE_ENV === 'development' || req.body.simulate === true;
+        // Check if PayFast is configured
+        const payfastConfigured = PAYFAST_MERCHANT_ID && PAYFAST_MERCHANT_KEY && PAYFAST_PASSPHRASE;
+        // Payment simulation mode DISABLED by default
+        // Only works if PayFast is configured AND explicitly requested with simulate=true
+        const simulatePayment = req.body.simulate === true && payfastConfigured;
         if (simulatePayment) {
             // Simulate payment success
             const invoiceNumber = `INV-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${Math.random().toString(36).substr(2, 5).toUpperCase()}`;
@@ -88,16 +96,50 @@ exports.createPaymentIntent = async (req, res) => {
                     payfastPaymentId: `sim_${payment.id}`
                 }
             });
-            // Update booking
-            await database_1.default.booking.update({
+            // Generate customer chat token when payment is confirmed
+            const { generateChatToken } = require('../lib/chatTokens');
+            const customerChatToken = generateChatToken(bookingId, req.user.id, 'customer');
+            // Update booking - payment completed, waiting for provider acceptance
+            const updatedBooking = await database_1.default.booking.update({
                 where: { id: bookingId },
                 data: {
                     paymentStatus: 'paid_to_escrow',
-                    status: 'confirmed',
+                    status: 'pending_acceptance', // Changed from 'confirmed' - provider must accept first
                     invoiceNumber: invoiceNumber,
-                    invoiceSentAt: new Date()
+                    invoiceSentAt: new Date(),
+                    customerChatToken, // Generate token when payment confirmed
+                    chatActive: false // Will be true when provider also accepts
+                },
+                include: {
+                    customer: { include: { user: true } },
+                    service: { include: { provider: { include: { user: true } } } }
                 }
             });
+            // If provider already accepted, activate chat
+            if (updatedBooking.providerChatToken) {
+                await database_1.default.booking.update({
+                    where: { id: bookingId },
+                    data: { chatActive: true }
+                });
+                // Notify both parties that chat is ready
+                try {
+                    const app = require('../server');
+                    const io = app.get && app.get('io');
+                    if (io) {
+                        io.to(updatedBooking.customer.user.id).emit('chat-token-received', {
+                            bookingId,
+                            chatToken: customerChatToken,
+                            chatActive: true
+                        });
+                        io.to(updatedBooking.service.provider.user.id).emit('chat-activated', {
+                            bookingId,
+                            chatActive: true
+                        });
+                        io.to(`booking:${bookingId}`).emit('chatroom-ready', { bookingId, chatActive: true });
+                    }
+                }
+                catch (_) { }
+            }
             // Update Spana wallet
             let wallet = await database_1.default.spanaWallet.findFirst();
             if (!wallet) {
@@ -174,13 +216,26 @@ exports.createPaymentIntent = async (req, res) => {
                 currency: 'ZAR'
             });
         }
-        // Real PayFast payment flow
+        // Real PayFast payment flow (only if credentials are configured)
+        if (!payfastConfigured) {
+            return res.status(503).json({
+                message: 'PayFast payment gateway is not configured. Payment simulation is disabled.',
+                error: 'PAYFAST_NOT_CONFIGURED',
+                instructions: 'To enable PayFast payments, add PAYFAST_MERCHANT_ID, PAYFAST_MERCHANT_KEY, and PAYFAST_PASSPHRASE to your .env file',
+                paymentId: payment.id,
+                amount: totalAmount,
+                baseAmount: baseAmount,
+                tipAmount: tip,
+                currency: 'ZAR',
+                simulated: false
+            });
+        }
         const payfastData = {
             merchant_id: PAYFAST_MERCHANT_ID,
             merchant_key: PAYFAST_MERCHANT_KEY,
-            return_url: `${process.env.CLIENT_URL || 'http://localhost:3000'}/payment-success?bookingId=${bookingId}`,
-            cancel_url: `${process.env.CLIENT_URL || 'http://localhost:3000'}/payment-cancelled?bookingId=${bookingId}`,
-            notify_url: `${process.env.CLIENT_URL || 'http://localhost:5003'}/payments/payfast-webhook`,
+            return_url: `${process.env.CLIENT_URL || process.env.EXTERNAL_API_URL || 'https://spana-server-5bhu.onrender.com'}/payment-success?bookingId=${bookingId}`,
+            cancel_url: `${process.env.CLIENT_URL || process.env.EXTERNAL_API_URL || 'https://spana-server-5bhu.onrender.com'}/payment-cancelled?bookingId=${bookingId}`,
+            notify_url: `${process.env.EXTERNAL_API_URL || 'https://spana-server-5bhu.onrender.com'}/payments/payfast-webhook`,
             name_first: booking.customer.user.firstName,
             name_last: booking.customer.user.lastName,
             email_address: booking.customer.user.email,
@@ -207,7 +262,8 @@ exports.createPaymentIntent = async (req, res) => {
             amount: totalAmount,
             baseAmount: baseAmount,
             tipAmount: tip,
-            currency: 'ZAR'
+            currency: 'ZAR',
+            configured: true
         });
     }
     catch (error) {
@@ -262,16 +318,56 @@ exports.payfastWebhook = async (req, res) => {
                     }
                 }
             });
-            // Update booking with invoice number
-            await database_1.default.booking.update({
+            // Generate customer chat token when payment is confirmed
+            const { generateChatToken } = require('../lib/chatTokens');
+            const customer = await database_1.default.booking.findUnique({
+                where: { id: bookingId },
+                include: { customer: { include: { user: true } } }
+            });
+            const customerChatToken = customer ? generateChatToken(bookingId, customer.customer.userId, 'customer') : null;
+            // Update booking with invoice number and chat token - payment completed, waiting for provider acceptance
+            const updatedBooking = await database_1.default.booking.update({
                 where: { id: bookingId },
                 data: {
                     paymentStatus: 'paid_to_escrow',
-                    status: 'confirmed',
+                    status: 'pending_acceptance', // Provider must accept after payment
                     invoiceNumber: invoiceNumber,
-                    invoiceSentAt: new Date()
+                    invoiceSentAt: new Date(),
+                    customerChatToken, // Generate token when payment confirmed
+                    chatActive: false // Will be true when provider also accepts
+                },
+                include: {
+                    customer: { include: { user: true } },
+                    service: { include: { provider: { include: { user: true } } } }
                 }
             });
+            // If provider already accepted, activate chat
+            if (updatedBooking.providerChatToken && customerChatToken) {
+                await database_1.default.booking.update({
+                    where: { id: bookingId },
+                    data: { chatActive: true }
+                });
+                // Notify both parties that chat is ready
+                try {
+                    const app = require('../server');
+                    const io = app.get && app.get('io');
+                    if (io) {
+                        io.to(updatedBooking.customer.user.id).emit('chat-token-received', {
+                            bookingId,
+                            chatToken: customerChatToken,
+                            chatActive: true
+                        });
+                        if (updatedBooking.service.provider) {
+                            io.to(updatedBooking.service.provider.user.id).emit('chat-activated', {
+                                bookingId,
+                                chatActive: true
+                            });
+                        }
+                        io.to(`booking:${bookingId}`).emit('chatroom-ready', { bookingId, chatActive: true });
+                    }
+                }
+                catch (_) { }
+            }
             // Update workflow: Payment Received
             try {
                 const workflowController = require('../controllers/serviceWorkflowController');
@@ -430,12 +526,16 @@ exports.releaseFunds = async (req, res) => {
         if (booking.payment?.escrowStatus !== 'held') {
             return res.status(400).json({ message: 'Funds already released or not in escrow' });
         }
-        // Release escrow funds (tip goes 100% to provider, commission only on base amount)
+        // Get SLA penalty from booking
+        const slaPenaltyAmount = booking.slaPenaltyAmount || 0;
+        // Release escrow funds (tip goes 100% to provider, commission only on base amount, SLA penalty deducted)
         const commissionRate = booking.payment.commissionRate || 0.15;
         const tipAmount = booking.payment.tipAmount || 0;
         const baseAmount = booking.payment.amount - tipAmount;
         const commissionAmount = baseAmount * commissionRate; // Commission only on service, not tip
-        const providerPayout = booking.payment.amount - commissionAmount; // Provider gets base - commission + full tip
+        // Deduct both commission AND SLA penalty from provider payout
+        // Ensure provider payout never goes negative (minimum R0)
+        const providerPayout = Math.max(0, booking.payment.amount - commissionAmount - slaPenaltyAmount);
         await database_1.default.payment.update({
             where: { id: booking.payment.id },
             data: {
@@ -479,6 +579,7 @@ exports.releaseFunds = async (req, res) => {
                 totalHeld: { decrement: booking.payment.amount },
                 totalReleased: { increment: providerPayout },
                 totalCommission: { increment: commissionAmount }
+                // Note: SLA penalty stays in escrow (customer compensation), not added to platform revenue
             }
         });
         await database_1.default.walletTransaction.create({
@@ -488,7 +589,7 @@ exports.releaseFunds = async (req, res) => {
                 amount: providerPayout,
                 bookingId,
                 paymentId: booking.payment.id,
-                description: `Released to provider after service completion`
+                description: `Released to provider after service completion${slaPenaltyAmount > 0 ? ` (SLA penalty: R${slaPenaltyAmount.toFixed(2)} deducted)` : ''}`
             }
         });
         await database_1.default.walletTransaction.create({
@@ -501,6 +602,19 @@ exports.releaseFunds = async (req, res) => {
                 description: `Commission earned`
             }
         });
+        // Create transaction record for SLA penalty (if applicable)
+        if (slaPenaltyAmount > 0) {
+            await database_1.default.walletTransaction.create({
+                data: {
+                    walletId: wallet.id,
+                    type: 'sla_penalty',
+                    amount: slaPenaltyAmount,
+                    bookingId,
+                    paymentId: booking.payment.id,
+                    description: `SLA penalty deducted from provider (held for customer compensation)`
+                }
+            });
+        }
         res.json({ message: 'Funds released to provider successfully' });
     }
     catch (error) {
@@ -629,8 +743,10 @@ exports.confirmPayment = async (req, res) => {
         const commissionRate = 0.15;
         const commissionAmount = totalAmount * commissionRate;
         const providerPayout = totalAmount - commissionAmount;
+        const referenceNumber = await (0, idGenerator_1.generatePaymentReferenceAsync)();
         const payment = await database_1.default.payment.create({
             data: {
+                referenceNumber, // SPANA-PY-000001
                 customerId: customer.id,
                 bookingId,
                 amount: totalAmount,
@@ -737,8 +853,12 @@ exports.confirmPayment = async (req, res) => {
 // Get payment history for user
 exports.getPaymentHistory = async (req, res) => {
     try {
+        // Admins can see all payments, customers see only their own
+        const where = req.user.role === 'admin'
+            ? {} // Admin sees all payments
+            : { customerId: req.user.id }; // Customer sees only their payments
         const payments = await database_1.default.payment.findMany({
-            where: { customerId: req.user.id },
+            where,
             include: {
                 booking: {
                     include: {
@@ -853,8 +973,10 @@ exports.webhookHandler = async (req, res) => {
                                 where: { userId }
                             });
                             if (customer) {
+                                const referenceNumber = await (0, idGenerator_1.generatePaymentReferenceAsync)();
                                 payment = await database_1.default.payment.create({
                                     data: {
+                                        referenceNumber, // SPANA-PY-000001
                                         customerId: customer.id,
                                         bookingId,
                                         amount: (pi.amount && pi.amount / 100) || 0,

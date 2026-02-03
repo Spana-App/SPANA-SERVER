@@ -84,14 +84,14 @@ async function main() {
         // ============================================
         log('📋', 'STEP 2: Creating Service Providers with 100% Complete Profiles', colors.blue);
         const providerData = [
-            { firstName: 'John', lastName: 'Doe', email: 'john.doe@provider.com', phone: '+27331111111', skills: ['Plumbing', 'Electrical'], experience: 8, category: 'Plumbing' },
-            { firstName: 'Jane', lastName: 'Smith', email: 'jane.smith@provider.com', phone: '+27331111112', skills: ['Cleaning', 'Carpentry'], experience: 5, category: 'Cleaning' },
-            { firstName: 'Mike', lastName: 'Johnson', email: 'mike.johnson@provider.com', phone: '+27331111113', skills: ['Painting', 'Gardening'], experience: 10, category: 'Painting' },
-            { firstName: 'Sarah', lastName: 'Williams', email: 'sarah.williams@provider.com', phone: '+27331111114', skills: ['Cleaning', 'Cooking'], experience: 4, category: 'Cleaning' },
-            { firstName: 'David', lastName: 'Brown', email: 'david.brown@provider.com', phone: '+27331111115', skills: ['Plumbing', 'HVAC'], experience: 12, category: 'Plumbing' },
-            { firstName: 'Emma', lastName: 'Wilson', email: 'emma.wilson@provider.com', phone: '+27331111116', skills: ['Electrical', 'Security'], experience: 7, category: 'Electrical' },
-            { firstName: 'James', lastName: 'Taylor', email: 'james.taylor@provider.com', phone: '+27331111117', skills: ['Carpentry', 'Furniture'], experience: 9, category: 'Carpentry' },
-            { firstName: 'Lisa', lastName: 'Anderson', email: 'lisa.anderson@provider.com', phone: '+27331111118', skills: ['Gardening', 'Landscaping'], experience: 6, category: 'Gardening' },
+            { firstName: 'John', lastName: 'Doe', email: 'john.doe@provider.com', phone: '+27331111111', skills: ['Plumbing', 'Electrical'], experience: 8 },
+            { firstName: 'Jane', lastName: 'Smith', email: 'jane.smith@provider.com', phone: '+27331111112', skills: ['Cleaning', 'Carpentry'], experience: 5 },
+            { firstName: 'Mike', lastName: 'Johnson', email: 'mike.johnson@provider.com', phone: '+27331111113', skills: ['Painting', 'Gardening'], experience: 10 },
+            { firstName: 'Sarah', lastName: 'Williams', email: 'sarah.williams@provider.com', phone: '+27331111114', skills: ['Cleaning', 'Cooking'], experience: 4 },
+            { firstName: 'David', lastName: 'Brown', email: 'david.brown@provider.com', phone: '+27331111115', skills: ['Plumbing', 'HVAC'], experience: 12 },
+            { firstName: 'Emma', lastName: 'Wilson', email: 'emma.wilson@provider.com', phone: '+27331111116', skills: ['Electrical', 'Security'], experience: 7 },
+            { firstName: 'James', lastName: 'Taylor', email: 'james.taylor@provider.com', phone: '+27331111117', skills: ['Carpentry', 'Furniture'], experience: 9 },
+            { firstName: 'Lisa', lastName: 'Anderson', email: 'lisa.anderson@provider.com', phone: '+27331111118', skills: ['Gardening', 'Landscaping'], experience: 6 },
         ];
         const providers = [];
         const providerPassword = await bcryptjs_1.default.hash('Provider123!', 12);
@@ -184,7 +184,7 @@ async function main() {
                     });
                 }
             }
-            providers.push({ user, provider, category: data.category });
+            providers.push({ user, provider });
             log('✅', `Provider created: ${data.firstName} ${data.lastName} (100% complete)`, colors.green);
         }
         console.log('');
@@ -201,18 +201,21 @@ async function main() {
             'Carpentry': ['Furniture Repair', 'Cabinet Installation', 'Custom Furniture', 'Door Repair'],
             'Gardening': ['Lawn Mowing', 'Garden Design', 'Tree Trimming', 'Landscaping']
         };
-        for (const { provider, user, category } of providers) {
-            const serviceNames = serviceTemplates[category] || ['General Service'];
+        for (const { provider, user } of providers) {
+            // Use first skill as service type
+            const serviceType = user.skills?.[0] || 'General';
+            const serviceNames = serviceTemplates[serviceType] || ['General Service'];
             for (const serviceName of serviceNames.slice(0, 2)) { // 2 services per provider
                 const service = await database_1.default.service.create({
                     data: {
                         providerId: provider.id,
                         title: serviceName,
                         description: `Professional ${serviceName.toLowerCase()} services by ${user.firstName}. Experienced and reliable.`,
-                        category,
                         price: Math.floor(Math.random() * 800) + 200, // 200-1000
                         duration: Math.floor(Math.random() * 180) + 60, // 60-240 minutes
-                        mediaUrl: `https://example.com/services/${serviceName.toLowerCase().replace(' ', '-')}.jpg`,
+                        // Use real stock-style images (dynamic) based on service name
+                        // Unsplash Source returns a real photo every time, no placeholders.
+                        mediaUrl: `https://source.unsplash.com/featured/?${encodeURIComponent(serviceName + ' service')}`,
                         status: 'active',
                         adminApproved: true,
                         approvedBy: (await database_1.default.user.findFirst({ where: { role: 'admin' } }))?.id,

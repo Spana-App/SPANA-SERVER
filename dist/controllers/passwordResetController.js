@@ -7,6 +7,13 @@ const database_1 = __importDefault(require("../lib/database"));
 const { sendPasswordResetEmail } = require('../config/mailer');
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
+// Rate limiting: Track recent reset requests per email
+const resetRequestCache = new Map();
+const RESET_COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes between requests
+// Blocklist: Emails that should never receive password reset emails
+const PASSWORD_RESET_BLOCKLIST = [
+    'xolinxiweni@gmail.com'
+].map(email => email.toLowerCase());
 // Generate password reset token
 const generateResetToken = () => {
     return crypto.randomBytes(32).toString('hex');
@@ -18,6 +25,38 @@ exports.requestPasswordReset = async (req, res) => {
         if (!email) {
             return res.status(400).json({ message: 'Email is required' });
         }
+        const emailLower = email.toLowerCase();
+        // Blocklist: Prevent password reset emails for specific addresses
+        if (PASSWORD_RESET_BLOCKLIST.includes(emailLower)) {
+            console.log(`[Password Reset] Blocked request for ${emailLower} (blocklisted)`);
+            return res.json({
+                message: 'If an account exists with this email, a password reset link has been sent.',
+                expiresIn: '1 hour'
+                // Don't reveal that it's blocked (security best practice)
+            });
+        }
+        // Rate limiting: Prevent spam from test scripts or repeated requests
+        if (emailLower.includes('@test.com') || emailLower.includes('test-')) {
+            // For test emails, return success without sending email or updating database
+            return res.json({
+                message: 'If an account exists with this email, a password reset link has been sent.',
+                expiresIn: '1 hour',
+                testMode: true,
+                note: 'Test email detected - no actual email sent'
+            });
+        }
+        // Check rate limit (5 minutes between requests per email)
+        const lastRequest = resetRequestCache.get(emailLower);
+        const now = Date.now();
+        if (lastRequest && (now - lastRequest) < RESET_COOLDOWN_MS) {
+            const remainingSeconds = Math.ceil((RESET_COOLDOWN_MS - (now - lastRequest)) / 1000);
+            return res.status(429).json({
+                message: 'Please wait before requesting another password reset.',
+                retryAfter: remainingSeconds
+            });
+        }
+        // Update rate limit cache
+        resetRequestCache.set(emailLower, now);
         const user = await database_1.default.user.findUnique({
             where: { email: email.toLowerCase() }
         });
@@ -40,7 +79,9 @@ exports.requestPasswordReset = async (req, res) => {
         });
         // Send reset email
         try {
-            const resetLink = `${process.env.CLIENT_URL || 'http://localhost:3000'}/reset-password?token=${resetToken}&email=${encodeURIComponent(user.email)}`;
+            // Use EXTERNAL_API_URL for reset links (backend handles the reset endpoint)
+            const baseUrl = process.env.EXTERNAL_API_URL || 'https://spana-server-5bhu.onrender.com';
+            const resetLink = `${baseUrl}/password-reset/reset?token=${resetToken}&email=${encodeURIComponent(user.email)}`;
             await sendPasswordResetEmail({
                 to: user.email,
                 name: user.firstName,

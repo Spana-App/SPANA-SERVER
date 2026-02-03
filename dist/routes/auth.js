@@ -56,4 +56,6 @@ router.get('/me', auth, authController.getMe); // Get current user's full profil
 router.put('/profile', auth, authController.updateProfile); // Update profile (supports partial updates)
 router.patch('/profile', auth, authController.updateProfile); // Partial profile update (alias for PUT)
 router.post('/profile/image', auth, imageUpload.single('image'), authController.uploadProfileImage); // Upload profile image
+// Public endpoint for service provider applications
+router.post('/applications/submit', authController.submitApplication);
 module.exports = router;

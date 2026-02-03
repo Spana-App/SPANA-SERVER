@@ -5,32 +5,50 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 const database_1 = __importDefault(require("../lib/database"));
 const nodeCrypto = require('crypto');
-const { sendVerificationEmail, sendAdminOTPEmail } = require('../config/mailer');
+const bcrypt = require('bcryptjs');
+const { sendVerificationEmail, sendAdminOTPEmail, sendWelcomeEmail } = require('../config/mailer');
+const { generateUserReferenceAsync } = require('../lib/idGenerator');
+const { generateUserId, generateProviderId, generateApplicationId } = require('../lib/spanaIdGenerator');
+const { transformUserResponse } = require('../lib/spanaIdHelper');
 // Helper function to get proper base URL for verification links
 function getBaseUrl(req) {
-    // Try to get from request headers first (most reliable)
-    if (req && req.headers && req.headers.host) {
-        const protocol = req.headers['x-forwarded-proto'] || (req.secure ? 'https' : 'http');
-        return `${protocol}://${req.headers.host}`;
-    }
-    // Check environment variables
-    let baseUrl = process.env.CLIENT_URL || process.env.EXTERNAL_API_URL;
-    // Handle '*' (CORS wildcard) or invalid URLs
-    if (!baseUrl || baseUrl === '*' || !baseUrl.startsWith('http')) {
-        // Try EXTERNAL_API_URL
-        if (process.env.EXTERNAL_API_URL && process.env.EXTERNAL_API_URL.startsWith('http')) {
+    // Priority 1: Use EXTERNAL_API_URL in production (never use localhost for verification links)
+    if (process.env.NODE_ENV === 'production' || process.env.EXTERNAL_API_URL) {
+        const externalUrl = process.env.EXTERNAL_API_URL;
+        if (externalUrl && externalUrl.startsWith('http')) {
             try {
-                return new URL(process.env.EXTERNAL_API_URL).origin;
+                return new URL(externalUrl).origin;
             }
             catch (e) {
-                // Invalid URL, continue to fallback
+                // Invalid URL, continue to next option
             }
         }
-        // Fallback to localhost with PORT
-        const port = process.env.PORT || '5003';
-        return `http://localhost:${port}`;
     }
-    return baseUrl.replace(/\/$/, ''); // Remove trailing slash
+    // Priority 2: Use CLIENT_URL if set
+    if (process.env.CLIENT_URL && process.env.CLIENT_URL.startsWith('http') && process.env.CLIENT_URL !== '*') {
+        return process.env.CLIENT_URL.replace(/\/$/, '');
+    }
+    // Priority 3: Try to get from request headers (only if not in production)
+    if (req && req.headers && req.headers.host && process.env.NODE_ENV !== 'production') {
+        const protocol = req.headers['x-forwarded-proto'] || (req.secure ? 'https' : 'http');
+        const host = req.headers.host;
+        // Don't use localhost in production
+        if (!host.includes('localhost') && !host.includes('127.0.0.1')) {
+            return `${protocol}://${host}`;
+        }
+    }
+    // Priority 4: Fallback to EXTERNAL_API_URL even if NODE_ENV is not production
+    if (process.env.EXTERNAL_API_URL && process.env.EXTERNAL_API_URL.startsWith('http')) {
+        try {
+            return new URL(process.env.EXTERNAL_API_URL).origin;
+        }
+        catch (e) {
+            // Invalid URL, continue to fallback
+        }
+    }
+    // Last resort: localhost (only for local development)
+    const port = process.env.PORT || '5003';
+    return `http://localhost:${port}`;
 }
 // Resend admin verification email
 exports.resendVerificationEmail = async (req, res) => {
@@ -104,6 +122,22 @@ exports.resendVerificationEmail = async (req, res) => {
 exports.verifyAdmin = async (req, res) => {
     try {
         const { token, email, otp } = req.query;
+        // Handle missing email parameter
+        if (!email) {
+            return res.status(400).send(`
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <title>Missing Email</title>
+          <style>body { font-family: Arial; text-align: center; padding: 50px; }</style>
+        </head>
+        <body>
+          <h1>❌ Missing Email Parameter</h1>
+          <p>Please provide an email address in the verification link.</p>
+        </body>
+        </html>
+      `);
+        }
         const user = await database_1.default.user.findFirst({
             where: {
                 email: email.toLowerCase(),
@@ -525,24 +559,97 @@ exports.getAllServices = async (req, res) => {
     }
 };
 // Admin CRUD Operations for Services
-// Create service (admin creates service and links to provider)
+// Create service (admin can create without providerId, assign later)
 exports.createService = async (req, res) => {
     try {
-        const { title, description, category, price, duration, providerId, mediaUrl } = req.body;
-        if (!title || !description || !category || !price || !duration || !providerId) {
-            return res.status(400).json({ message: 'Missing required fields' });
+        const { title, description, price, mediaUrl, status, providerId } = req.body;
+        // Required fields: title, description, price (providerId and duration are optional)
+        if (!title || !description || !price) {
+            return res.status(400).json({ message: 'Missing required fields: title, description, price' });
+        }
+        // If providerId is provided, verify it exists
+        if (providerId) {
+            const provider = await database_1.default.serviceProvider.findUnique({
+                where: { id: providerId }
+            });
+            if (!provider) {
+                return res.status(404).json({ message: 'Service provider not found' });
+            }
         }
         const service = await database_1.default.service.create({
             data: {
                 title,
                 description,
-                category,
                 price: parseFloat(price),
-                duration: parseInt(duration),
-                providerId,
+                duration: null, // Optional - can be set later
+                providerId: providerId || null, // Optional: can be null
                 mediaUrl: mediaUrl || null,
-                status: 'pending_approval',
-                adminApproved: false
+                status: status || 'draft', // Default to 'draft' if no provider
+                adminApproved: providerId ? false : true // Auto-approve if no provider (admin-created service)
+            },
+            include: {
+                provider: providerId ? {
+                    include: {
+                        user: {
+                            select: {
+                                firstName: true,
+                                lastName: true,
+                                email: true
+                            }
+                        }
+                    }
+                } : undefined
+            }
+        });
+        res.status(201).json({
+            message: providerId
+                ? 'Service created successfully and linked to provider'
+                : 'Service created successfully (no provider assigned yet)',
+            service
+        });
+    }
+    catch (error) {
+        console.error('Create service error', error);
+        res.status(500).json({ message: 'Server error', error: error instanceof Error ? error.message : 'Unknown error' });
+    }
+};
+// Assign service to provider (admin only)
+exports.assignServiceToProvider = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { providerId } = req.body;
+        if (!providerId) {
+            return res.status(400).json({ message: 'providerId is required' });
+        }
+        // Verify service exists
+        const service = await database_1.default.service.findUnique({
+            where: { id }
+        });
+        if (!service) {
+            return res.status(404).json({ message: 'Service not found' });
+        }
+        // Verify provider exists
+        const provider = await database_1.default.serviceProvider.findUnique({
+            where: { id: providerId },
+            include: {
+                user: {
+                    select: {
+                        firstName: true,
+                        lastName: true,
+                        email: true
+                    }
+                }
+            }
+        });
+        if (!provider) {
+            return res.status(404).json({ message: 'Service provider not found' });
+        }
+        // Update service with provider
+        const updatedService = await database_1.default.service.update({
+            where: { id },
+            data: {
+                providerId,
+                adminApproved: false // Require re-approval after assignment
             },
             include: {
                 provider: {
@@ -558,24 +665,68 @@ exports.createService = async (req, res) => {
                 }
             }
         });
-        res.status(201).json({ message: 'Service created successfully', service });
+        res.json({
+            message: 'Service assigned to provider successfully',
+            service: updatedService
+        });
     }
     catch (error) {
-        console.error('Create service error', error);
-        res.status(500).json({ message: 'Server error' });
+        console.error('Assign service to provider error', error);
+        res.status(500).json({ message: 'Server error', error: error instanceof Error ? error.message : 'Unknown error' });
+    }
+};
+// Unassign service from provider (admin only)
+exports.unassignServiceFromProvider = async (req, res) => {
+    try {
+        const { id } = req.params;
+        // Verify service exists
+        const service = await database_1.default.service.findUnique({
+            where: { id }
+        });
+        if (!service) {
+            return res.status(404).json({ message: 'Service not found' });
+        }
+        if (!service.providerId) {
+            return res.status(400).json({ message: 'Service is not assigned to any provider' });
+        }
+        // Remove provider assignment
+        const updatedService = await database_1.default.service.update({
+            where: { id },
+            data: {
+                providerId: null
+            }
+        });
+        res.json({
+            message: 'Service unassigned from provider successfully',
+            service: updatedService
+        });
+    }
+    catch (error) {
+        console.error('Unassign service from provider error', error);
+        res.status(500).json({ message: 'Server error', error: error instanceof Error ? error.message : 'Unknown error' });
     }
 };
 // Update service
 exports.updateService = async (req, res) => {
     try {
         const { id } = req.params;
-        const { title, description, category, price, duration, mediaUrl, status } = req.body;
+        const { title, description, price, duration, mediaUrl, status, providerId } = req.body;
+        // If providerId is being updated, verify it exists
+        if (providerId !== undefined) {
+            if (providerId !== null) {
+                const provider = await database_1.default.serviceProvider.findUnique({
+                    where: { id: providerId }
+                });
+                if (!provider) {
+                    return res.status(404).json({ message: 'Service provider not found' });
+                }
+            }
+        }
         const service = await database_1.default.service.update({
             where: { id },
             data: {
                 ...(title && { title }),
                 ...(description && { description }),
-                ...(category && { category }),
                 ...(price && { price: parseFloat(price) }),
                 ...(duration && { duration: parseInt(duration) }),
                 ...(mediaUrl !== undefined && { mediaUrl }),
@@ -711,14 +862,16 @@ exports.getProviderPerformance = async (req, res) => {
         res.status(500).json({ message: 'Server error' });
     }
 };
-// Get all complaints
+// Get all complaints (admin oversees everything)
 exports.getAllComplaints = async (req, res) => {
     try {
-        const { status, severity } = req.query;
+        const { status, severity, type, reportedByRole } = req.query;
         const complaints = await database_1.default.complaint.findMany({
             where: {
                 ...(status && { status }),
-                ...(severity && { severity })
+                ...(severity && { severity }),
+                ...(type && { type }),
+                ...(reportedByRole && { reportedByRole })
             },
             include: {
                 booking: {
@@ -916,5 +1069,594 @@ exports.verifyOTP = async (req, res) => {
     catch (error) {
         console.error('Verify OTP error', error);
         res.status(500).json({ message: 'Server error' });
+    }
+};
+// Admin creates service provider (CMS only) - Provider sets password on profile completion
+exports.registerServiceProvider = async (req, res) => {
+    try {
+        const { firstName, lastName, email, phone } = req.body;
+        // Validate required fields
+        if (!firstName || !lastName || !email || !phone) {
+            return res.status(400).json({
+                message: 'Missing required fields: firstName, lastName, email, phone'
+            });
+        }
+        // Check if user already exists
+        const existingUser = await database_1.default.user.findUnique({
+            where: { email: email.toLowerCase() }
+        });
+        if (existingUser) {
+            return res.status(400).json({ message: 'User already exists with this email' });
+        }
+        // Generate readable password for provider (12 characters: letters, numbers, special chars)
+        // This password will be sent via email after profile completion
+        // Password stays active until user chooses to change it
+        const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*';
+        let generatedPassword = '';
+        for (let i = 0; i < 12; i++) {
+            generatedPassword += chars.charAt(Math.floor(Math.random() * chars.length));
+        }
+        console.log(`[Admin] Generated password for ${email}: ${generatedPassword.substring(0, 4)}...`);
+        const hashedPassword = await bcrypt.hash(generatedPassword, 12);
+        // Generate SPANA ID (format: SPN-abc123) - use as actual ID
+        const spanaUserId = await generateUserId();
+        const user = await database_1.default.user.create({
+            data: {
+                id: spanaUserId, // Use SPANA ID as the actual ID
+                email: email.toLowerCase(),
+                password: hashedPassword, // Password - will be sent via email after profile completion
+                firstName,
+                lastName,
+                phone: phone || null,
+                role: 'service_provider',
+                isEmailVerified: false, // Will be true after credentials email sent post-profile completion
+                isPhoneVerified: null, // Not a priority
+            }
+        });
+        // Create service provider record with verification token
+        // Token never expires if unused - 30-minute countdown starts on first use
+        const verificationToken = nodeCrypto.randomBytes(32).toString('hex');
+        console.log(`[Admin] Creating ServiceProvider with temporaryPassword: ${generatedPassword.substring(0, 4)}...`);
+        const serviceProvider = await database_1.default.serviceProvider.create({
+            data: {
+                userId: user.id,
+                skills: [],
+                experienceYears: 0,
+                isOnline: false,
+                rating: 0,
+                totalReviews: 0,
+                isVerified: true, // Admin verified documents before creating account
+                isIdentityVerified: true, // Admin verified documents before creating account
+                availability: { days: [], hours: { start: '', end: '' } },
+                serviceAreaRadius: 0,
+                serviceAreaCenter: { type: 'Point', coordinates: [0, 0] },
+                isProfileComplete: false,
+                verificationToken,
+                verificationExpires: null, // No expiration until first use
+                verificationTokenFirstUsedAt: null, // Will be set when token is first accessed
+                temporaryPassword: generatedPassword // Store password - will be sent via email after profile completion
+            }
+        });
+        console.log(`[Admin] ServiceProvider created. temporaryPassword stored: ${serviceProvider.temporaryPassword ? 'YES' : 'NO'}`);
+        // Build profile completion link - prioritize EXTERNAL_API_URL
+        let baseUrl = process.env.EXTERNAL_API_URL;
+        if (!baseUrl || baseUrl === '*' || !baseUrl.startsWith('http')) {
+            if (process.env.CLIENT_URL && process.env.CLIENT_URL.startsWith('http') && process.env.CLIENT_URL !== '*') {
+                baseUrl = process.env.CLIENT_URL;
+            }
+            else {
+                // Fallback to production URL
+                baseUrl = 'https://spana-server-5bhu.onrender.com';
+            }
+        }
+        const cleanBaseUrl = baseUrl.replace(/\/$/, '');
+        const profileCompletionLink = `${cleanBaseUrl}/complete-registration?token=${verificationToken}&uid=${user.id}`;
+        // Send welcome email with profile completion link
+        try {
+            console.log(`[Admin] Attempting to send service provider welcome email to ${user.email}...`);
+            const { sendWelcomeEmail } = require('../config/mailer');
+            await sendWelcomeEmail(user, {
+                token: verificationToken,
+                uid: user.id
+            });
+            console.log(`[Admin] ✅ Service provider welcome email sent to ${user.email}`);
+        }
+        catch (emailError) {
+            console.error('[Admin] ❌ Failed to send service provider welcome email:', emailError.message);
+            // Don't fail provider creation if email fails
+        }
+        res.status(201).json({
+            message: 'Service provider created successfully. Welcome email sent with profile completion link.',
+            user: {
+                id: user.id, // SPANA ID
+                email: user.email,
+                firstName: user.firstName,
+                lastName: user.lastName,
+                phone: user.phone,
+                role: user.role,
+                isEmailVerified: false
+            },
+            profileCompletionLink,
+            note: 'Provider must complete profile and set password via the link sent in email.'
+        });
+    }
+    catch (error) {
+        console.error('Register service provider error:', error);
+        res.status(500).json({
+            message: 'Server error',
+            error: error.message
+        });
+    }
+};
+// Admin creates another admin (CMS only) - Auto-generates password
+exports.registerAdmin = async (req, res) => {
+    try {
+        const { firstName, lastName, email, phone } = req.body;
+        // Validate required fields
+        if (!firstName || !lastName || !email || !phone) {
+            return res.status(400).json({
+                message: 'Missing required fields: firstName, lastName, email, phone'
+            });
+        }
+        // Check if user already exists
+        const existingUser = await database_1.default.user.findUnique({
+            where: { email: email.toLowerCase() }
+        });
+        if (existingUser) {
+            return res.status(400).json({ message: 'User already exists with this email' });
+        }
+        // Validate email domain for admin
+        const getAdminDomains = () => {
+            const envDomains = process.env.ADMIN_EMAIL_DOMAINS;
+            if (envDomains) {
+                return envDomains.split(',').map(d => d.trim().toLowerCase());
+            }
+            return ['@spana.co.za', '@gmail.com'];
+        };
+        const emailLower = email.toLowerCase();
+        const isAdminEmail = getAdminDomains().some(domain => emailLower.endsWith(domain));
+        if (!isAdminEmail) {
+            const allowedDomains = getAdminDomains().join(', ');
+            return res.status(400).json({
+                message: `Admin email must be from an admin domain (${allowedDomains})`
+            });
+        }
+        // Generate secure random password (12 characters: letters, numbers, special chars)
+        // ONLY admins get auto-generated passwords
+        const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*';
+        let autoGeneratedPassword = '';
+        for (let i = 0; i < 12; i++) {
+            autoGeneratedPassword += chars.charAt(Math.floor(Math.random() * chars.length));
+        }
+        const hashedPassword = await bcrypt.hash(autoGeneratedPassword, 12);
+        // Generate SPANA ID (format: SPN-abc123) - use as actual ID
+        const spanaAdminId = await generateUserId();
+        // Create user with admin role
+        const user = await database_1.default.user.create({
+            data: {
+                id: spanaAdminId, // Use SPANA ID as the actual ID
+                email: email.toLowerCase(),
+                password: hashedPassword,
+                firstName,
+                lastName,
+                phone,
+                role: 'admin',
+                isEmailVerified: false
+            }
+        });
+        // Create admin verification record
+        try {
+            await database_1.default.adminVerification.create({
+                data: {
+                    adminEmail: email.toLowerCase(),
+                    verified: false
+                }
+            });
+        }
+        catch (err) {
+            console.error('Error creating admin verification record:', err);
+        }
+        // Send admin credentials email with auto-generated password
+        try {
+            console.log(`[Admin] Attempting to send admin credentials email to ${user.email}...`);
+            const { sendAdminCredentialsEmail } = require('../config/mailer');
+            await sendAdminCredentialsEmail({
+                to: user.email,
+                name: `${user.firstName} ${user.lastName}`,
+                email: user.email,
+                password: autoGeneratedPassword
+            });
+            console.log(`[Admin] ✅ Admin credentials email sent to ${user.email}`);
+        }
+        catch (emailError) {
+            console.error('[Admin] ❌ Failed to send admin credentials email:', emailError.message);
+            // Don't fail admin creation if email fails
+        }
+        res.status(201).json({
+            message: 'Admin created successfully. Credentials email sent with auto-generated password.',
+            user: {
+                id: user.id, // SPANA ID
+                email: user.email,
+                firstName: user.firstName,
+                lastName: user.lastName,
+                phone: user.phone,
+                role: user.role,
+                isEmailVerified: false
+            },
+            password: autoGeneratedPassword, // Return for admin reference (also sent via email)
+            note: 'Password sent via email. Admin should change password after first login.'
+        });
+    }
+    catch (error) {
+        console.error('Register admin error:', error);
+        res.status(500).json({
+            message: 'Server error',
+            error: error.message
+        });
+    }
+};
+// Admin updates their own profile (password, etc.)
+exports.updateAdminProfile = async (req, res) => {
+    try {
+        const adminId = req.user.id; // From auth middleware
+        const { password, firstName, lastName, phone } = req.body;
+        const updateData = {};
+        if (firstName)
+            updateData.firstName = firstName;
+        if (lastName)
+            updateData.lastName = lastName;
+        if (phone)
+            updateData.phone = phone;
+        // Update password if provided
+        if (password) {
+            if (password.length < 8) {
+                return res.status(400).json({
+                    message: 'Password must be at least 8 characters long'
+                });
+            }
+            updateData.password = await bcrypt.hash(password, 12);
+        }
+        if (Object.keys(updateData).length === 0) {
+            return res.status(400).json({
+                message: 'No fields to update'
+            });
+        }
+        const updatedUser = await database_1.default.user.update({
+            where: { id: adminId },
+            data: updateData,
+            select: {
+                id: true,
+                email: true,
+                firstName: true,
+                lastName: true,
+                phone: true,
+                role: true,
+                isEmailVerified: true,
+                profileImage: true,
+                createdAt: true,
+                updatedAt: true
+            }
+        });
+        res.json({
+            message: 'Profile updated successfully',
+            user: updatedUser
+        });
+    }
+    catch (error) {
+        console.error('Update admin profile error:', error);
+        res.status(500).json({
+            message: 'Server error',
+            error: error.message
+        });
+    }
+};
+// Verify application and create provider account
+// POST /admin/applications/:applicationId/verify
+exports.verifyApplicationAndCreateProvider = async (req, res) => {
+    try {
+        const { applicationId } = req.params;
+        const adminId = req.user.id; // Admin user ID from auth middleware
+        // Find the application
+        const application = await database_1.default.serviceProviderApplication.findUnique({
+            where: { id: applicationId },
+            include: {
+                provider: true // Check if provider already exists
+            }
+        });
+        if (!application) {
+            return res.status(404).json({ message: 'Application not found' });
+        }
+        // Check if already processed
+        if (application.status === 'approved' && application.provider) {
+            return res.status(400).json({
+                message: 'Application already approved and provider account created'
+            });
+        }
+        if (application.status === 'rejected') {
+            return res.status(400).json({
+                message: 'Application was rejected and cannot be verified'
+            });
+        }
+        // Check if user already exists with this email
+        const existingUser = await database_1.default.user.findUnique({
+            where: { email: application.email.toLowerCase() }
+        });
+        if (existingUser) {
+            return res.status(400).json({
+                message: 'User already exists with this email. Cannot create duplicate account.'
+            });
+        }
+        // Generate password for provider (12 characters: letters, numbers, special chars)
+        const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*';
+        let generatedPassword = '';
+        for (let i = 0; i < 12; i++) {
+            generatedPassword += chars.charAt(Math.floor(Math.random() * chars.length));
+        }
+        console.log(`[Admin] Generated password for ${application.email}: ${generatedPassword.substring(0, 4)}...`);
+        const hashedPassword = await bcrypt.hash(generatedPassword, 12);
+        // Generate SPANA ID (format: SPN-abc123)
+        const spanaUserId = await generateUserId();
+        // Create user account with SPANA ID
+        const user = await database_1.default.user.create({
+            data: {
+                id: spanaUserId, // Use SPANA ID as the actual ID
+                email: application.email.toLowerCase(),
+                password: hashedPassword,
+                firstName: application.firstName,
+                lastName: application.lastName,
+                phone: application.phone || null,
+                role: 'service_provider',
+                isEmailVerified: false, // Will be true after credentials email sent post-profile completion
+                isPhoneVerified: null, // Not a priority
+                profileImage: '',
+                walletBalance: 0,
+                status: 'active'
+            }
+        });
+        // Create service provider record with verification token
+        // Token never expires if unused - 30-minute countdown starts on first use
+        const verificationToken = nodeCrypto.randomBytes(32).toString('hex');
+        const serviceProvider = await database_1.default.serviceProvider.create({
+            data: {
+                userId: user.id,
+                skills: application.skills || [],
+                experienceYears: application.experienceYears || 0,
+                isOnline: false,
+                rating: 0,
+                totalReviews: 0,
+                isVerified: true, // Admin verified documents before creating account
+                isIdentityVerified: true, // Admin verified documents before creating account
+                availability: { days: [], hours: { start: '', end: '' } },
+                serviceAreaRadius: 0,
+                serviceAreaCenter: application.location || { type: 'Point', coordinates: [0, 0] },
+                isProfileComplete: false,
+                verificationToken,
+                verificationExpires: null, // No expiration until first use
+                verificationTokenFirstUsedAt: null, // Will be set when token is first accessed
+                temporaryPassword: generatedPassword, // Store password - will be sent via email after profile completion
+                applicationId: application.id // Link to application
+            }
+        });
+        // Create Document records from application documents
+        if (application.documents && Array.isArray(application.documents)) {
+            for (const docItem of application.documents) {
+                // Type assertion for JSON document object
+                const doc = docItem;
+                if (doc && doc.url) {
+                    await database_1.default.document.create({
+                        data: {
+                            type: doc.type || 'document',
+                            url: doc.url,
+                            verified: false, // Will be verified by admin later
+                            providerId: serviceProvider.id,
+                            metadata: {
+                                name: doc.name || 'Unknown',
+                                size: doc.size || 0,
+                                mimetype: doc.mimetype || 'application/octet-stream',
+                                uploadedDuringApplication: true
+                            }
+                        }
+                    });
+                }
+            }
+        }
+        // Update application status
+        await database_1.default.serviceProviderApplication.update({
+            where: { id: applicationId },
+            data: {
+                status: 'approved',
+                reviewedBy: adminId,
+                reviewedAt: new Date()
+            }
+        });
+        // Build profile completion link
+        let baseUrl = process.env.EXTERNAL_API_URL;
+        if (!baseUrl || baseUrl === '*' || !baseUrl.startsWith('http')) {
+            if (process.env.CLIENT_URL && process.env.CLIENT_URL.startsWith('http') && process.env.CLIENT_URL !== '*') {
+                baseUrl = process.env.CLIENT_URL;
+            }
+            else {
+                baseUrl = 'https://spana-server-5bhu.onrender.com';
+            }
+        }
+        const cleanBaseUrl = baseUrl.replace(/\/$/, '');
+        const profileCompletionLink = `${cleanBaseUrl}/complete-registration?token=${verificationToken}&uid=${user.id}`;
+        // Send welcome email with profile completion link
+        try {
+            console.log(`[Admin] Sending service provider welcome email to ${user.email}...`);
+            await sendWelcomeEmail(user, {
+                token: verificationToken,
+                uid: user.id
+            });
+            console.log(`[Admin] ✅ Service provider welcome email sent to ${user.email}`);
+        }
+        catch (emailError) {
+            console.error('[Admin] ❌ Failed to send service provider welcome email:', emailError.message);
+            // Don't fail provider creation if email fails
+        }
+        res.json({
+            message: 'Application verified and provider account created successfully',
+            user: {
+                id: user.id, // SPANA ID
+                email: user.email,
+                firstName: user.firstName,
+                lastName: user.lastName,
+                phone: user.phone,
+                role: user.role,
+                isEmailVerified: user.isEmailVerified
+            },
+            provider: {
+                id: serviceProvider.id,
+                isVerified: serviceProvider.isVerified,
+                isIdentityVerified: serviceProvider.isIdentityVerified
+            },
+            application: {
+                id: application.id,
+                status: 'approved'
+            }
+        });
+    }
+    catch (error) {
+        console.error('Verify application and create provider error:', error);
+        res.status(500).json({
+            message: 'Server error',
+            error: error.message
+        });
+    }
+};
+// Get all service provider applications (for CMS)
+exports.getAllApplications = async (req, res) => {
+    try {
+        const { status, page = 1, limit = 50 } = req.query;
+        const pageNum = parseInt(page) || 1;
+        const limitNum = parseInt(limit) || 50;
+        const skip = (pageNum - 1) * limitNum;
+        // Build where clause
+        const where = {};
+        if (status) {
+            where.status = status;
+        }
+        // Get applications with pagination
+        const [applications, total] = await Promise.all([
+            database_1.default.serviceProviderApplication.findMany({
+                where,
+                skip,
+                take: limitNum,
+                orderBy: {
+                    createdAt: 'desc'
+                },
+                include: {
+                    provider: {
+                        include: {
+                            user: {
+                                select: {
+                                    id: true,
+                                    email: true,
+                                    firstName: true,
+                                    lastName: true
+                                }
+                            }
+                        }
+                    }
+                }
+            }),
+            database_1.default.serviceProviderApplication.count({ where })
+        ]);
+        res.json({
+            applications,
+            pagination: {
+                page: pageNum,
+                limit: limitNum,
+                total,
+                totalPages: Math.ceil(total / limitNum)
+            }
+        });
+    }
+    catch (error) {
+        console.error('Get all applications error:', error);
+        res.status(500).json({
+            message: 'Server error',
+            error: error.message
+        });
+    }
+};
+// Get single application by ID (for CMS)
+exports.getApplicationById = async (req, res) => {
+    try {
+        const { applicationId } = req.params;
+        const application = await database_1.default.serviceProviderApplication.findUnique({
+            where: { id: applicationId },
+            include: {
+                provider: {
+                    include: {
+                        user: {
+                            select: {
+                                id: true,
+                                email: true,
+                                firstName: true,
+                                lastName: true,
+                                phone: true
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        if (!application) {
+            return res.status(404).json({ message: 'Application not found' });
+        }
+        res.json(application);
+    }
+    catch (error) {
+        console.error('Get application by ID error:', error);
+        res.status(500).json({
+            message: 'Server error',
+            error: error.message
+        });
+    }
+};
+// Reject application (for CMS)
+exports.rejectApplication = async (req, res) => {
+    try {
+        const { applicationId } = req.params;
+        const { rejectionReason } = req.body;
+        const adminId = req.user.id;
+        if (!rejectionReason || rejectionReason.trim().length === 0) {
+            return res.status(400).json({
+                message: 'Rejection reason is required'
+            });
+        }
+        const application = await database_1.default.serviceProviderApplication.findUnique({
+            where: { id: applicationId }
+        });
+        if (!application) {
+            return res.status(404).json({ message: 'Application not found' });
+        }
+        if (application.status !== 'pending') {
+            return res.status(400).json({
+                message: `Application is already ${application.status}. Cannot reject.`
+            });
+        }
+        // Update application status
+        const updatedApplication = await database_1.default.serviceProviderApplication.update({
+            where: { id: applicationId },
+            data: {
+                status: 'rejected',
+                reviewedBy: adminId,
+                reviewedAt: new Date(),
+                rejectionReason: rejectionReason.trim()
+            }
+        });
+        res.json({
+            message: 'Application rejected successfully',
+            application: updatedApplication
+        });
+    }
+    catch (error) {
+        console.error('Reject application error:', error);
+        res.status(500).json({
+            message: 'Server error',
+            error: error.message
+        });
     }
 };

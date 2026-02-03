@@ -105,6 +105,53 @@ router.post('/documents', auth, docUpload.array('documents', 5), async (req, res
         res.status(500).json({ message: 'Server error' });
     }
 });
+// Public endpoint for uploading application documents (no auth required)
+const applicationDocUpload = multer({
+    storage: multer.diskStorage({
+        destination: (req, file, cb) => {
+            const uploadDir = 'uploads/applications/';
+            if (!fs.existsSync(uploadDir)) {
+                fs.mkdirSync(uploadDir, { recursive: true });
+            }
+            cb(null, uploadDir);
+        },
+        filename: (req, file, cb) => {
+            const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+            cb(null, `app-${uniqueSuffix}${path.extname(file.originalname)}`);
+        }
+    }),
+    limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit
+    fileFilter: (req, file, cb) => {
+        if (file.mimetype.startsWith('image/') || file.mimetype === 'application/pdf') {
+            cb(null, true);
+        }
+        else {
+            cb(new Error('Only images or PDF allowed'), false);
+        }
+    }
+});
+router.post('/application-documents', applicationDocUpload.array('documents', 10), async (req, res) => {
+    try {
+        if (!req.files || req.files.length === 0) {
+            return res.status(400).json({ message: 'No files uploaded' });
+        }
+        const documents = req.files.map((file, index) => ({
+            type: req.body.types && Array.isArray(req.body.types) ? (req.body.types[index] || 'document') : 'document',
+            url: `/uploads/applications/${file.filename}`,
+            name: file.originalname,
+            size: file.size,
+            mimetype: file.mimetype
+        }));
+        res.json({
+            message: 'Documents uploaded successfully',
+            documents
+        });
+    }
+    catch (error) {
+        console.error('Application document upload error:', error);
+        res.status(500).json({ message: 'Server error', error: error.message });
+    }
+});
 module.exports = router;
 // Admin: verify a provider document (toggle verified)
 router.post('/documents/:docId/verify', auth, authorize('admin', 'System_admin'), async (req, res) => {

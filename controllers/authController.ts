@@ -1,5 +1,6 @@
 import prisma from '../lib/database';
 import { generateUserReferenceAsync } from '../lib/idGenerator';
+const { generateUserId } = require('../lib/spanaIdGenerator');
 // import { syncUserToMongo } from '../lib/mongoSync';
 const jwt = require('jsonwebtoken');
 const { validationResult } = require('express-validator');
@@ -86,14 +87,15 @@ exports.register = async (req: any, res: any) => {
 
     // Create new user
     console.log('Creating user with data:', userData);
-    const referenceNumber = await generateUserReferenceAsync();
+    // Generate SPANA ID (format: SPN-abc123) - use as actual ID
+    const spanaUserId = await generateUserId();
     const user = await prisma.user.create({
       data: {
         ...userData,
-        referenceNumber // SPN-USR-000001
+        id: spanaUserId // Use SPANA ID as the actual ID
       }
     });
-    console.log('User created:', user.id, 'Reference:', referenceNumber);
+    console.log('User created with SPANA ID:', user.id);
 
     // Create role-specific record
     if (finalRole === 'customer') {
@@ -137,13 +139,14 @@ exports.register = async (req: any, res: any) => {
       }
     });
 
-    // Shape response by role
+    // Shape response by role - user.id is now SPANA ID
     let userResponse: any;
     if (user.role === 'customer' && userWithRole?.customer) {
       const { id, email, firstName, lastName, phone, role, isEmailVerified, isPhoneVerified, profileImage, location, walletBalance, status, createdAt, updatedAt } = user;
       const { favouriteProviders, totalBookings, ratingGivenAvg } = userWithRole.customer;
       userResponse = { 
-        _id: id, email, firstName, lastName, phone, role, isVerified: false, isEmailVerified, isPhoneVerified, 
+        _id: id, id: id,
+        email, firstName, lastName, phone, role, isVerified: false, isEmailVerified, isPhoneVerified, 
         profileImage, location, walletBalance, status, 
         customerDetails: { favouriteProviders, totalBookings, ratingGivenAvg }, 
         createdAt, updatedAt, __v: 0 
@@ -152,7 +155,8 @@ exports.register = async (req: any, res: any) => {
       const { id, email, firstName, lastName, phone, role, isEmailVerified, isPhoneVerified, profileImage, location, walletBalance, status, createdAt, updatedAt } = user;
       const { skills, experienceYears, isOnline, rating, totalReviews, isVerified, isIdentityVerified, availability, serviceAreaRadius, serviceAreaCenter, isProfileComplete } = userWithRole.serviceProvider;
       userResponse = { 
-        _id: id, email, firstName, lastName, phone, role, isVerified, isEmailVerified, isPhoneVerified, isIdentityVerified, 
+        _id: id, id: id,
+        email, firstName, lastName, phone, role, isVerified, isEmailVerified, isPhoneVerified, isIdentityVerified, 
         profileImage, skills, experienceYears, isOnline, rating, totalReviews, isProfileComplete, 
         availability, serviceArea: { radiusInKm: serviceAreaRadius, baseLocation: serviceAreaCenter }, 
         location, walletBalance, status, createdAt, updatedAt, __v: 0 
@@ -160,7 +164,8 @@ exports.register = async (req: any, res: any) => {
     } else {
       // Fallback for admin or other roles
       userResponse = {
-        _id: user.id, email: user.email, firstName: user.firstName, lastName: user.lastName, 
+        _id: user.id, id: user.id,
+        email: user.email, firstName: user.firstName, lastName: user.lastName, 
         phone: user.phone, role: user.role, isVerified: false, isEmailVerified: user.isEmailVerified, 
         isPhoneVerified: user.isPhoneVerified, profileImage: user.profileImage, location: user.location, 
         walletBalance: user.walletBalance, status: user.status, createdAt: user.createdAt, 

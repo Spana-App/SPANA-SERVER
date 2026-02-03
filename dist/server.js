@@ -48,7 +48,7 @@ const { promisify } = require('util');
 const os = require('os');
 // DNS lookup removed - not needed and causes memory issues
 // const dns = require('dns').promises;
-const { verifySmtp } = require('./config/mailer');
+const emailService = require('./lib/emailService');
 // Import routes
 const authRoutes = require('./routes/auth');
 const userRoutes = require('./routes/users');
@@ -59,6 +59,9 @@ const notificationRoutes = require('./routes/notifications');
 const activityRoutes = require('./routes/activities');
 const uploadRoutes = require('./routes/upload');
 const workflowRoutes = require('./routes/workflows');
+const chatRoutes = require('./routes/chat');
+const providerRoutes = require('./routes/provider');
+const mapRoutes = require('./routes/maps');
 // Initialize Express app
 const app = (0, express_1.default)();
 // Optional monitoring setup (wrapped so it won't crash if prom-client not available)
@@ -133,46 +136,211 @@ const initSocket = (server) => {
         console.log(chalk.cyan(`🔌  User connected: ${socket.id} (userId=${socket.userId})`));
         // Join user to their room for private messages
         socket.join(socket.userId);
-        // Join booking room for real-time tracking/chat
-        socket.on('join-booking', ({ bookingId }) => {
-            if (bookingId) {
+        // Join booking room for real-time tracking/chat (requires token)
+        socket.on('join-booking', async ({ bookingId, chatToken }) => {
+            if (!bookingId)
+                return;
+            try {
+                // Verify chat token
+                const { verifyChatToken, parseChatToken } = require('./lib/chatTokens');
+                const tokenData = parseChatToken(chatToken);
+                if (!tokenData || tokenData.bookingId !== bookingId) {
+                    socket.emit('chat-error', { message: 'Invalid chat token' });
+                    return;
+                }
+                // Verify booking exists and chat is active
+                const booking = await database_1.default.booking.findUnique({
+                    where: { id: bookingId },
+                    include: {
+                        customer: {
+                            select: {
+                                userId: true
+                            }
+                        },
+                        service: {
+                            include: {
+                                provider: {
+                                    select: {
+                                        userId: true
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
+                if (!booking) {
+                    socket.emit('chat-error', { message: 'Booking not found' });
+                    return;
+                }
+                // Check if chat is terminated
+                if (booking.chatTerminatedAt) {
+                    socket.emit('chat-error', { message: 'Chat has been terminated (job completed)' });
+                    return;
+                }
+                // Verify user matches token role
+                const isCustomer = booking.customer?.userId === socket.userId;
+                const isProvider = booking.service?.provider?.userId === socket.userId;
+                if (tokenData.role === 'customer' && !isCustomer) {
+                    socket.emit('chat-error', { message: 'Invalid token for customer' });
+                    return;
+                }
+                if (tokenData.role === 'service_provider' && !isProvider) {
+                    socket.emit('chat-error', { message: 'Invalid token for provider' });
+                    return;
+                }
+                // Verify token
+                if (!verifyChatToken(chatToken, bookingId, socket.userId, tokenData.role)) {
+                    socket.emit('chat-error', { message: 'Invalid chat token' });
+                    return;
+                }
+                // Join booking room
                 socket.join(`booking:${bookingId}`);
+                socket.emit('booking-joined', { bookingId, chatActive: booking.chatActive });
+            }
+            catch (error) {
+                console.error('Join booking error:', error);
+                socket.emit('chat-error', { message: 'Failed to join booking chat' });
             }
         });
-        // Chat messages within booking room
+        // Chat messages within booking room (customer-provider, admin can see all)
         socket.on('booking-chat', async ({ bookingId, message }) => {
             if (bookingId && message) {
-                // persist chat message asynchronously
                 try {
-                    await database_1.default.message.create({
+                    // Verify user is involved in booking or is admin
+                    const booking = await database_1.default.booking.findUnique({
+                        where: { id: bookingId },
+                        include: {
+                            customer: { include: { user: true } },
+                            service: { include: { provider: { include: { user: true } } } }
+                        }
+                    });
+                    if (!booking) {
+                        socket.emit('chat-error', { message: 'Booking not found' });
+                        return;
+                    }
+                    const isCustomer = booking.customer.userId === socket.userId;
+                    const isProvider = booking.service.provider?.userId === socket.userId;
+                    const isAdmin = socket.userRole === 'admin';
+                    if (!isCustomer && !isProvider && !isAdmin) {
+                        socket.emit('chat-error', { message: 'Not authorized to chat in this booking' });
+                        return;
+                    }
+                    // Persist chat message
+                    const savedMessage = await database_1.default.message.create({
                         data: {
                             bookingId,
                             senderId: socket.userId || '',
                             content: message,
-                            receiverId: ''
+                            receiverId: null, // Booking chat is broadcast to room
+                            chatType: 'booking'
                         }
                     });
+                    // Broadcast to booking room (customer, provider, and admin can all see)
+                    io.to(`booking:${bookingId}`).emit('booking-chat', {
+                        id: savedMessage.id,
+                        from: socket.userId,
+                        message,
+                        ts: savedMessage.createdAt
+                    });
+                    // Also notify admin if not already in room
+                    if (!isAdmin) {
+                        const admins = await database_1.default.user.findMany({
+                            where: { role: 'admin' },
+                            select: { id: true }
+                        });
+                        admins.forEach(admin => {
+                            io.to(admin.id).emit('booking-chat', {
+                                id: savedMessage.id,
+                                from: socket.userId,
+                                message,
+                                bookingId,
+                                ts: savedMessage.createdAt
+                            });
+                        });
+                    }
                 }
-                catch (_) { }
-                io.to(`booking:${bookingId}`).emit('booking-chat', { from: socket.userId, message, ts: Date.now() });
+                catch (error) {
+                    console.error('Booking chat error:', error);
+                    socket.emit('chat-error', { message: 'Failed to send message' });
+                }
             }
         });
-        // Generic chat message (user-to-user)
-        socket.on('chat-message', async ({ toUserId, message }) => {
+        // Generic chat message (user-to-user) with permission checks
+        socket.on('chat-message', async ({ toUserId, message, chatType }) => {
             if (!toUserId || !message)
                 return;
             try {
-                await database_1.default.message.create({
+                // Get sender and receiver roles for permission check
+                const sender = await database_1.default.user.findUnique({
+                    where: { id: socket.userId },
+                    select: { id: true, role: true }
+                });
+                const receiver = await database_1.default.user.findUnique({
+                    where: { id: toUserId },
+                    select: { id: true, role: true }
+                });
+                if (!sender || !receiver) {
+                    socket.emit('chat-error', { message: 'User not found' });
+                    return;
+                }
+                // Permission checks
+                let allowed = false;
+                let actualChatType = chatType || 'direct';
+                // Admin can chat with anyone
+                if (sender.role === 'admin') {
+                    allowed = true;
+                }
+                // Provider can chat with admin
+                else if (sender.role === 'service_provider' && receiver.role === 'admin') {
+                    allowed = true;
+                    actualChatType = 'admin';
+                }
+                // Customer-provider bidirectional chat
+                else if ((sender.role === 'customer' && receiver.role === 'service_provider') ||
+                    (sender.role === 'service_provider' && receiver.role === 'customer')) {
+                    allowed = true;
+                }
+                // Customer cannot chat with admin
+                else if (sender.role === 'customer' && receiver.role === 'admin') {
+                    socket.emit('chat-error', {
+                        message: 'Customers cannot chat with admin. Please use the complaint system.'
+                    });
+                    return;
+                }
+                if (!allowed) {
+                    socket.emit('chat-error', { message: 'Chat not allowed between these users' });
+                    return;
+                }
+                // Create and send message
+                const savedMessage = await database_1.default.message.create({
                     data: {
                         bookingId: null,
                         senderId: socket.userId || '',
                         content: message,
-                        receiverId: toUserId
+                        receiverId: toUserId,
+                        chatType: actualChatType
                     }
                 });
+                // Notify receiver
+                io.to(toUserId).emit('chat-message', {
+                    id: savedMessage.id,
+                    from: socket.userId,
+                    message,
+                    chatType: actualChatType,
+                    ts: savedMessage.createdAt
+                });
+                // Also notify sender (confirmation)
+                socket.emit('chat-sent', {
+                    id: savedMessage.id,
+                    to: toUserId,
+                    message,
+                    ts: savedMessage.createdAt
+                });
             }
-            catch (_) { }
-            io.to(toUserId).emit('chat-message', { from: socket.userId, message, ts: Date.now() });
+            catch (error) {
+                console.error('Chat message error:', error);
+                socket.emit('chat-error', { message: 'Failed to send message' });
+            }
         });
         // Live location updates broadcast
         socket.on('booking-location', ({ bookingId, role, coordinates }) => {
@@ -250,6 +418,8 @@ app.use((req, res, next) => {
 // Body parsing middleware
 app.use(express_1.default.json({ limit: '10mb' }));
 app.use(express_1.default.urlencoded({ extended: true }));
+// Serve uploaded files statically
+app.use('/uploads', express_1.default.static('uploads'));
 // Database connection: only connect when running the server directly
 // Make it non-blocking so server starts immediately
 if (require.main === module) {
@@ -278,8 +448,12 @@ if (require.main === module) {
 }
 // Add caching middleware for GET requests using cache abstraction or Redis if enabled
 // Cache middleware - lazy load to avoid memory issues at startup
+// Skip cache for /discover route
 app.use('/services', async (req, res, next) => {
     if (req.method !== 'GET')
+        return next();
+    // Skip cache for discover route
+    if (req.path === '/discover' || req.path.startsWith('/discover'))
         return next();
     try {
         // Lazy load cache module to avoid memory issues
@@ -315,13 +489,18 @@ app.use('/payments', paymentRoutes);
 app.use('/notifications', notificationRoutes);
 app.use('/activities', activityRoutes);
 app.use('/uploads', uploadRoutes);
+app.use('/maps', mapRoutes);
 app.use('/workflows', workflowRoutes);
 app.use('/email-verification', require('./routes/emailVerification'));
 app.use('/admin', require('./routes/admin'));
 app.use('/password-reset', require('./routes/passwordReset'));
 app.use('/privacy', require('./routes/privacy'));
 app.use('/complaints', require('./routes/complaints'));
+app.use('/contact', require('./routes/contact'));
 app.use('/stats', require('./routes/stats'));
+app.use('/chat', chatRoutes);
+app.use('/provider', providerRoutes);
+app.use('/', require('./routes/registration'));
 // Health check endpoint with Redis status
 app.get('/health', async (req, res) => {
     let dbStatus = 'disconnected';
@@ -398,30 +577,24 @@ app.get('/health/detailed', async (req, res) => {
     else {
         console.log(chalk.green('✅  Detailed health check passed'));
     }
-    // SMTP
-    // SMTP / Mail provider
-    const mailProvider = (process.env.MAIL_PROVIDER || 'smtp').toLowerCase();
-    const mailEnabled = String(process.env.MAIL_ENABLED || 'true').toLowerCase() === 'true';
-    if (!mailEnabled || mailProvider === 'none' || mailProvider === 'disabled') {
-        healthCheck.smtp = 'disabled';
-    }
-    else {
-        try {
-            const smtp = await verifySmtp();
-            healthCheck.smtp = smtp.ok ? 'connected' : 'disconnected';
-            if (!smtp.ok) {
-                healthCheck.smtpError = smtp.error;
-                if (healthCheck.status === 'OK')
-                    healthCheck.status = 'DEGRADED';
-                console.log(chalk.red('❌  SMTP verify failed:'), smtp.error);
+    // Email service health (Vercel microservice)
+    try {
+        const isServiceEnabled = emailService.isEmailServiceEnabled && emailService.isEmailServiceEnabled();
+        if (!isServiceEnabled) {
+            healthCheck.emailService = 'disabled';
+        }
+        else {
+            const healthy = await emailService.checkEmailServiceHealth();
+            healthCheck.emailService = healthy ? 'healthy' : 'unhealthy';
+            if (!healthy && healthCheck.status === 'OK') {
+                healthCheck.status = 'DEGRADED';
             }
         }
-        catch (e) {
-            healthCheck.smtp = 'disconnected';
-            healthCheck.smtpError = e && e.message ? e.message : String(e);
-            if (healthCheck.status === 'OK')
-                healthCheck.status = 'DEGRADED';
-            console.log(chalk.red('❌  SMTP verify failed:'), healthCheck.smtpError);
+    }
+    catch (e) {
+        healthCheck.emailService = 'unhealthy';
+        if (healthCheck.status === 'OK') {
+            healthCheck.status = 'DEGRADED';
         }
     }
     // return detailed health info
@@ -472,18 +645,25 @@ if (require.main === module) {
                         console.log(' Memory (MB):   ', `rss=${(mem.rss / 1048576).toFixed(1)} heapUsed=${(mem.heapUsed / 1048576).toFixed(1)}`);
                         console.log(' Load avg:      ', load.map(n => n.toFixed(2)).join(', '));
                         console.log(' Routes:        ', ['/auth', '/users', '/services', '/bookings', '/payments', '/notifications', '/activities', '/uploads', '/email-verification'].join(' '));
-                        const mailProvider = (process.env.MAIL_PROVIDER || 'smtp').toLowerCase();
-                        const mailEnabled = String(process.env.MAIL_ENABLED || 'true').toLowerCase() === 'true';
-                        if (!mailEnabled || mailProvider === 'none' || mailProvider === 'disabled') {
-                            console.log(' SMTP:          ', 'disabled');
+                        // Email service diagnostics (microservice on Vercel)
+                        try {
+                            const isServiceEnabled = emailService.isEmailServiceEnabled && emailService.isEmailServiceEnabled();
+                            if (!isServiceEnabled) {
+                                console.log(' Email Service: ', 'disabled');
+                            }
+                            else {
+                                // Non-blocking health check
+                                emailService.checkEmailServiceHealth()
+                                    .then((healthy) => {
+                                    console.log(' Email Service: ', healthy ? chalk.green('healthy') : chalk.yellow('unhealthy'));
+                                })
+                                    .catch(() => {
+                                    console.log(' Email Service: ', chalk.yellow('unhealthy'));
+                                });
+                            }
                         }
-                        else {
-                            // SMTP verification is slow - do it async without blocking
-                            require('./config/mailer').verifySmtp().then((smtp) => {
-                                console.log(' SMTP:          ', smtp.ok ? chalk.green(`connected (${mailProvider})`) : chalk.yellow(`checking...`));
-                            }).catch(() => {
-                                console.log(' SMTP:          ', chalk.yellow('checking...'));
-                            });
+                        catch {
+                            console.log(' Email Service: ', chalk.yellow('unhealthy'));
                         }
                         // Skip DNS lookup - it's slow and not critical for startup
                         console.log('────────────────────────────────────────────────────\n');
@@ -510,11 +690,19 @@ if (require.main === module) {
 // Handle server errors (only if server was started)
 // Note: Error handling for listen is now in the try-catch above
 // Global error observers (to aid diagnostics)
-process.on('unhandledRejection', (reason) => {
+// Don't exit on unhandled rejections - log and continue
+process.on('unhandledRejection', (reason, promise) => {
     console.error(chalk.red('🚨 Unhandled Promise Rejection:'), reason);
+    console.error(chalk.red('🚨 Promise:'), promise);
+    // Don't exit - let the server continue running
+    // Render will restart if health checks fail
 });
+// Uncaught exceptions are more serious - but we'll log and let Render handle restart
 process.on('uncaughtException', (err) => {
     console.error(chalk.red('🚨 Uncaught Exception:'), err);
+    console.error(chalk.red('🚨 Stack:'), err.stack);
+    // Log but don't exit immediately - let graceful shutdown handle it
+    // This prevents immediate crash but allows Render to detect and restart if needed
 });
 // Graceful shutdown
 const gracefulShutdown = async () => {

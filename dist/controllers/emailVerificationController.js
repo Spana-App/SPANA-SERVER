@@ -13,7 +13,11 @@ const generateVerificationToken = () => {
 // Send verification email
 exports.sendVerificationEmail = async (req, res) => {
     try {
-        const { email } = req.body;
+        // Get email from body or from authenticated user
+        const email = req.body.email || req.user?.email;
+        if (!email) {
+            return res.status(400).json({ message: 'Email is required' });
+        }
         // Find user by email
         const user = await database_1.default.user.findUnique({
             where: { email },
@@ -40,7 +44,8 @@ exports.sendVerificationEmail = async (req, res) => {
             }
         });
         // Send verification email - use backend port for verification
-        const verificationLink = `http://localhost:5003/email-verification/verify-email?token=${verificationToken}`;
+        const baseUrl = process.env.EXTERNAL_API_URL || 'https://spana-server-5bhu.onrender.com';
+        const verificationLink = `${baseUrl}/email-verification/verify-email?token=${verificationToken}`;
         try {
             await sendEmailVerification({
                 to: user.email,
@@ -105,7 +110,7 @@ exports.verifyEmail = async (req, res) => {
           <div class="container">
             <div class="error">❌ Verification Failed</div>
             <div class="message">Invalid or expired verification token. Please request a new verification email.</div>
-            <a href="http://localhost:5003" class="button">Go to Spana</a>
+            <a href="${process.env.EXTERNAL_API_URL || 'https://spana-server-5bhu.onrender.com'}" class="button">Go to Spana</a>
           </div>
         </body>
         </html>
@@ -183,7 +188,7 @@ exports.verifyEmail = async (req, res) => {
           <div class="container">
             <div class="success">✅ Email Verified Successfully!</div>
             <div class="message">Welcome to the Spana family, ${user.firstName}! 🎉<br>Your email has been verified and you can now access all features.</div>
-            <a href="http://localhost:5003" class="button">Continue to Spana</a>
+            <a href="${process.env.EXTERNAL_API_URL || 'https://spana-server-5bhu.onrender.com'}" class="button">Continue to Spana</a>
           </div>
         </body>
         </html>

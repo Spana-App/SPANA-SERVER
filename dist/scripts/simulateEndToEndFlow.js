@@ -366,13 +366,12 @@ async function main() {
         const services = [];
         const serviceCategories = ['Plumbing', 'Cleaning', 'Electrical', 'Painting', 'Gardening', 'Carpentry'];
         for (const { provider, user } of registeredProviders) {
-            const category = randomChoice(serviceCategories);
+            const serviceType = randomChoice(['Plumbing', 'Cleaning', 'Electrical', 'Painting', 'Carpentry', 'Gardening']);
             const service = await database_1.default.service.create({
                 data: {
                     providerId: provider.id,
-                    title: `${category} Service`,
-                    description: `Professional ${category.toLowerCase()} services by ${user.firstName}`,
-                    category,
+                    title: `${serviceType} Service`,
+                    description: `Professional ${serviceType.toLowerCase()} services by ${user.firstName}`,
                     price: randomInt(200, 1000),
                     duration: randomInt(60, 240),
                     status: 'pending_approval',

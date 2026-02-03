@@ -15,9 +15,8 @@ datasource db {
 
 // Base User model with common fields
 model User {
-  id              String  @id @default(cuid())
-  referenceNumber String? @unique // SPN-USR-000001
-  email           String  @unique
+  id    String @id @default(cuid()) // SPN-{random} - override in application code for new users
+  email String @unique
   password        String
   firstName       String
   lastName        String

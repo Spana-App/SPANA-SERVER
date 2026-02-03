@@ -4,22 +4,119 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 const database_1 = __importDefault(require("../lib/database"));
+const providerMatching_1 = require("../lib/providerMatching");
+const idGenerator_1 = require("../lib/idGenerator");
 // import { syncBookingToMongo } from '../lib/mongoSync';
-// Create a new booking REQUEST (Uber-style)
+// Create a new booking REQUEST (Uber-style) - Automatic provider matching
 exports.createBooking = async (req, res) => {
     try {
-        const { serviceId, date, time, location, notes, estimatedDurationMinutes, jobSize, customPrice } = req.body;
-        // Get service to find provider
-        const service = await database_1.default.service.findUnique({
-            where: { id: serviceId },
-            include: { provider: { include: { user: true } } }
-        });
-        if (!service) {
-            return res.status(404).json({ message: 'Service not found' });
+        const { serviceTitle, serviceId, date, time, location, notes, estimatedDurationMinutes, jobSize, customPrice, requiredSkills } = req.body;
+        // Validate location is provided (required for tracking)
+        if (!location || !location.coordinates || location.coordinates.length !== 2) {
+            return res.status(400).json({
+                message: 'Location with coordinates is required. Please enable location services on your device.'
+            });
         }
-        // Check if service is admin-approved
-        if (!service.adminApproved || service.status !== 'active') {
-            return res.status(400).json({ message: 'Service is not available for booking' });
+        // Get customer location
+        const customer = await database_1.default.customer.findUnique({
+            where: { userId: req.user.id },
+            include: { user: true }
+        });
+        if (!customer) {
+            return res.status(404).json({ message: 'Customer profile not found' });
+        }
+        // Ensure customer has location set
+        if (!customer.user.location) {
+            return res.status(400).json({
+                message: 'Customer location not set. Please update your location in profile settings.'
+            });
+        }
+        let service;
+        let providerMatch = null;
+        // If serviceId provided, use existing service
+        if (serviceId) {
+            service = await database_1.default.service.findUnique({
+                where: { id: serviceId },
+                include: { provider: { include: { user: true } } }
+            });
+            if (!service) {
+                return res.status(404).json({ message: 'Service not found' });
+            }
+            // Check if service is admin-approved
+            if (!service.adminApproved || service.status !== 'active') {
+                return res.status(400).json({ message: 'Service is not available for booking' });
+            }
+            // Check if assigned provider is online and available
+            if (service.provider) {
+                const isBusy = await database_1.default.booking.findFirst({
+                    where: {
+                        service: { providerId: service.provider.id },
+                        status: { in: ['confirmed', 'in_progress', 'pending_payment'] }
+                    }
+                });
+                if (service.provider.isOnline && !isBusy) {
+                    // Provider is available - use assigned provider
+                    providerMatch = {
+                        provider: service.provider,
+                        service: service,
+                        distance: 0,
+                        locationMultiplier: (0, providerMatching_1.getLocationMultiplier)(location.address, location.coordinates),
+                        adjustedPrice: service.price
+                    };
+                }
+                else {
+                    // Provider not available - try to find alternative, otherwise queue
+                    try {
+                        providerMatch = await (0, providerMatching_1.getBestAvailableProvider)(service.title, service.provider.skills || [], location, service.price);
+                    }
+                    catch (error) {
+                        console.error('Error finding alternative provider:', error);
+                        // If matching fails, queue the request
+                        providerMatch = null;
+                    }
+                }
+            }
+            else {
+                // Service has no provider assigned - find one automatically
+                try {
+                    providerMatch = await (0, providerMatching_1.getBestAvailableProvider)(service.title, [], location, service.price);
+                }
+                catch (error) {
+                    console.error('Error finding provider for service:', error);
+                    providerMatch = null;
+                }
+            }
+        }
+        else if (serviceTitle) {
+            // Automatic provider matching based on service title
+            const skills = requiredSkills || [];
+            providerMatch = await (0, providerMatching_1.getBestAvailableProvider)(serviceTitle, skills, location, 1000 // Default base price, will be adjusted
+            );
+            if (!providerMatch) {
+                // No providers available - add to queue
+                return res.status(202).json({
+                    message: 'No providers available at this time. Your request has been queued.',
+                    queued: true,
+                    estimatedWaitTime: '5-15 minutes',
+                    nextStep: 'wait_for_provider'
+                });
+            }
+            // Find or create service for the matched provider
+            service = providerMatch.service;
+        }
+        else {
+            return res.status(400).json({
+                message: 'Either serviceId or serviceTitle with requiredSkills must be provided'
+            });
+        }
+        // If no provider match found, queue the request
+        if (!providerMatch) {
+            return res.status(202).json({
+                message: 'No providers available at this time. Your request has been queued.',
+                queued: true,
+                estimatedWaitTime: '5-15 minutes',
+                nextStep: 'wait_for_provider'
+            });
         }
         // Job size calculation
         const jobSizeMultipliers = {
@@ -28,26 +125,47 @@ exports.createBooking = async (req, res) => {
             large: 2.0,
             custom: 1.0
         };
-        const basePrice = service.price;
+        // Use location-adjusted price from provider matching
+        const basePrice = providerMatch.adjustedPrice || service.price;
         const selectedJobSize = jobSize || 'medium';
         const multiplier = jobSizeMultipliers[selectedJobSize] || 1.0;
         const calculatedPrice = selectedJobSize === 'custom' && customPrice
             ? parseFloat(customPrice)
             : basePrice * multiplier;
-        // Get customer record for the user
-        const customer = await database_1.default.customer.findUnique({
-            where: { userId: req.user.id }
-        });
-        if (!customer) {
-            return res.status(404).json({ message: 'Customer profile not found' });
+        // Validate date - must be same day (immediate service like Uber)
+        const bookingDate = new Date(date);
+        const today = new Date();
+        today.setHours(0, 0, 0, 0); // Start of today
+        const bookingDateOnly = new Date(bookingDate);
+        bookingDateOnly.setHours(0, 0, 0, 0); // Start of booking date
+        // Check if booking date is today
+        if (bookingDateOnly.getTime() !== today.getTime()) {
+            return res.status(400).json({
+                message: 'Bookings must be for today only. All services are immediate attention like Uber - no future bookings allowed.',
+                receivedDate: bookingDate.toISOString(),
+                today: today.toISOString()
+            });
+        }
+        // Check if booking time is in the past (for today's bookings)
+        const bookingDateTime = new Date(date);
+        const now = new Date();
+        if (bookingDateTime < now) {
+            return res.status(400).json({
+                message: 'Booking time cannot be in the past. Please select a current or future time for today.',
+                receivedTime: bookingDateTime.toISOString(),
+                currentTime: now.toISOString()
+            });
         }
         // Create booking request - Customer must pay first before provider allocation
         // Status: pending_payment (waiting for payment)
+        // Date is set to current time for immediate service
+        const referenceNumber = await (0, idGenerator_1.generateBookingReferenceAsync)();
         const booking = await database_1.default.booking.create({
             data: {
+                referenceNumber, // SPANA-BK-000001
                 customerId: customer.id,
-                serviceId,
-                date: new Date(date),
+                serviceId: service.id,
+                date: bookingDateTime, // Use validated date/time
                 time,
                 location,
                 notes,
@@ -58,7 +176,9 @@ exports.createBooking = async (req, res) => {
                 calculatedPrice: calculatedPrice,
                 status: 'pending_payment', // NEW: Waiting for payment
                 requestStatus: 'pending', // Will be sent to providers after payment
-                paymentStatus: 'pending' // Payment required
+                paymentStatus: 'pending', // Payment required
+                locationMultiplier: providerMatch.locationMultiplier, // Store location multiplier
+                providerDistance: providerMatch.distance // Store distance to provider
             },
             include: {
                 service: {
@@ -87,18 +207,20 @@ exports.createBooking = async (req, res) => {
             await workflowClient.createWorkflowForBooking(booking.id, defaultSteps).catch(() => { });
         }
         catch (_) { }
-        // Notify provider via socket
+        // Notify matched provider via socket
         try {
             const app = require('../server');
             const io = app.get && app.get('io');
-            if (io && service.provider.user.id) {
-                io.to(service.provider.user.id).emit('new-booking-request', {
+            if (io && providerMatch && providerMatch.provider && providerMatch.provider.user) {
+                io.to(providerMatch.provider.user.id).emit('new-booking-request', {
                     bookingId: booking.id,
                     service: service.title,
                     customer: `${req.user.firstName} ${req.user.lastName}`,
                     date: booking.date,
                     time: booking.time,
-                    location: booking.location
+                    location: booking.location,
+                    distance: providerMatch.distance,
+                    adjustedPrice: calculatedPrice
                 });
             }
         }
@@ -121,8 +243,11 @@ exports.createBooking = async (req, res) => {
             };
         }
         res.status(201).json({
-            message: 'Booking created. Payment required before provider allocation.',
+            message: 'Booking created. Provider matched and notified. Payment required before service starts.',
             booking: responseBooking,
+            providerMatched: true,
+            providerDistance: providerMatch.distance,
+            locationMultiplier: providerMatch.locationMultiplier,
             paymentRequired: true,
             amount: calculatedPrice,
             nextStep: 'payment'
@@ -171,13 +296,17 @@ exports.acceptBookingRequest = async (req, res) => {
         if (booking.requestStatus !== 'pending') {
             return res.status(400).json({ message: 'Booking request already processed' });
         }
-        // Update booking to accepted
+        // Generate provider chat token when provider accepts
+        const { generateChatToken } = require('../lib/chatTokens');
+        const providerChatToken = generateChatToken(bookingId, req.user.id, 'service_provider');
+        // Update booking to accepted and generate provider chat token
         const updatedBooking = await database_1.default.booking.update({
             where: { id: bookingId },
             data: {
                 requestStatus: 'accepted',
                 providerAcceptedAt: new Date(),
-                status: 'confirmed' // Payment already received, ready to start
+                status: 'confirmed', // Payment already received, ready to start
+                providerChatToken // Generate token when provider accepts
             },
             include: {
                 service: {
@@ -199,13 +328,30 @@ exports.acceptBookingRequest = async (req, res) => {
             const app = require('../server');
             const io = app.get && app.get('io');
             if (io) {
-                // Notify customer
+                // Notify customer with provider chat token (customer will get token after payment)
                 io.to(booking.customer.user.id).emit('booking-accepted', {
                     bookingId: booking.id,
-                    message: 'Provider has accepted your booking request'
+                    message: 'Provider has accepted your booking request',
+                    providerChatToken: updatedBooking.providerChatToken // Provider token generated
                 });
-                // Both parties can now join the booking room for chat
-                io.to(`booking:${bookingId}`).emit('chatroom-ready', { bookingId });
+                // Notify provider with their chat token
+                io.to(req.user.id).emit('booking-accepted-provider', {
+                    bookingId: booking.id,
+                    message: 'You have accepted the booking request',
+                    chatToken: updatedBooking.providerChatToken, // Provider gets token when accepting
+                    waitingForPayment: !updatedBooking.customerChatToken // Waiting for customer payment
+                });
+                // Activate chat if both tokens exist (payment already done)
+                if (updatedBooking.customerChatToken && updatedBooking.providerChatToken) {
+                    await database_1.default.booking.update({
+                        where: { id: bookingId },
+                        data: { chatActive: true }
+                    });
+                    io.to(`booking:${bookingId}`).emit('chatroom-ready', {
+                        bookingId,
+                        chatActive: true
+                    });
+                }
             }
         }
         catch (_) { }
@@ -446,7 +592,9 @@ exports.completeBooking = async (req, res) => {
                 completedAt: completedAt,
                 actualDurationMinutes: actualDurationMinutes,
                 slaBreached: slaBreached,
-                slaPenaltyAmount: slaPenaltyAmount
+                slaPenaltyAmount: slaPenaltyAmount,
+                chatActive: false, // Terminate chat when job is done
+                chatTerminatedAt: new Date() // Mark chat as terminated
             },
             include: {
                 service: {
@@ -1176,13 +1324,21 @@ async function releaseEscrowFunds(paymentId, bookingId) {
         });
         if (!payment || payment.escrowStatus !== 'held')
             return;
-        // Calculate payout (tip goes 100% to provider, commission only on base amount)
+        // Get SLA penalty from booking
+        const booking = await database_1.default.booking.findUnique({
+            where: { id: bookingId },
+            select: { slaPenaltyAmount: true }
+        });
+        const slaPenaltyAmount = booking?.slaPenaltyAmount || 0;
+        // Calculate payout (tip goes 100% to provider, commission only on base amount, SLA penalty deducted)
         const commissionRate = payment.commissionRate || 0.15;
         const tipAmount = payment.tipAmount || 0;
         const baseAmount = payment.amount - tipAmount;
         const commissionAmount = baseAmount * commissionRate; // Commission only on service, not tip
-        const providerPayout = payment.amount - commissionAmount; // Provider gets base - commission + full tip
-        // Update payment
+        // Deduct both commission AND SLA penalty from provider payout
+        // Ensure provider payout never goes negative (minimum R0)
+        const providerPayout = Math.max(0, payment.amount - commissionAmount - slaPenaltyAmount);
+        // Update payment (include SLA penalty for tracking)
         await database_1.default.payment.update({
             where: { id: paymentId },
             data: {
@@ -1190,15 +1346,17 @@ async function releaseEscrowFunds(paymentId, bookingId) {
                 commissionAmount,
                 providerPayout,
                 status: 'completed'
+                // Note: SLA penalty stored in booking.slaPenaltyAmount, not payment
             }
         });
-        // Update booking
+        // Update booking (include SLA penalty in payout amount)
         await database_1.default.booking.update({
             where: { id: bookingId },
             data: {
                 paymentStatus: 'released_to_provider',
                 commissionAmount,
                 providerPayoutAmount: providerPayout
+                // slaPenaltyAmount already stored in booking
             }
         });
         // Update provider wallet
@@ -1231,6 +1389,7 @@ async function releaseEscrowFunds(paymentId, bookingId) {
                 totalHeld: { decrement: payment.amount },
                 totalReleased: { increment: providerPayout },
                 totalCommission: { increment: commissionAmount }
+                // Note: SLA penalty stays in escrow (customer compensation), not added to platform revenue
             }
         });
         await database_1.default.walletTransaction.create({
@@ -1240,7 +1399,7 @@ async function releaseEscrowFunds(paymentId, bookingId) {
                 amount: providerPayout,
                 bookingId,
                 paymentId,
-                description: `Released to provider after service completion`
+                description: `Released to provider after service completion${slaPenaltyAmount > 0 ? ` (SLA penalty: R${slaPenaltyAmount.toFixed(2)} deducted)` : ''}`
             }
         });
         await database_1.default.walletTransaction.create({
@@ -1253,6 +1412,19 @@ async function releaseEscrowFunds(paymentId, bookingId) {
                 description: `Commission earned`
             }
         });
+        // Create transaction record for SLA penalty (if applicable)
+        if (slaPenaltyAmount > 0) {
+            await database_1.default.walletTransaction.create({
+                data: {
+                    walletId: wallet.id,
+                    type: 'sla_penalty',
+                    amount: slaPenaltyAmount,
+                    bookingId,
+                    paymentId,
+                    description: `SLA penalty deducted from provider (held for customer compensation)`
+                }
+            });
+        }
     }
     catch (error) {
         console.error('Error releasing escrow funds:', error);
