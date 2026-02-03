@@ -342,48 +342,15 @@ exports.completeRegistration = async (req: any, res: any) => {
 };
 
 // External script for complete registration (CSP-friendly, no inline JS)
+// NOTE: This endpoint ALWAYS serves JavaScript - no token validation here.
+// Token validation happens in:
+// 1. GET /complete-registration (HTML page) - shows error messages
+// 2. POST /complete-registration (form submission) - processes the form
 exports.completeRegistrationScript = async (req: any, res: any) => {
   try {
-    const { token, uid } = req.query;
-
-    if (!token || !uid) {
-      res
-        .type('application/javascript')
-        .send('console.error("Missing token or uid for complete-registration script.");');
-      return;
-    }
-
-    const user = await prisma.user.findUnique({
-      where: { id: String(uid) },
-      include: {
-        serviceProvider: true
-      }
-    });
-
-    if (!user || user.role !== 'service_provider' || !user.serviceProvider) {
-      res
-        .type('application/javascript')
-        .send('console.error("Provider not found for complete-registration script.");');
-      return;
-    }
-
-    const provider = user.serviceProvider;
-
-    if (!provider.verificationToken || provider.verificationToken !== String(token)) {
-      res
-        .type('application/javascript')
-        .send('console.error("Invalid token for complete-registration script.");');
-      return;
-    }
-
-    if (provider.verificationExpires && provider.verificationExpires < new Date()) {
-      res
-        .type('application/javascript')
-        .send('console.error("Token expired for complete-registration script.");');
-      return;
-    }
-
-    const initialSkillsJson = JSON.stringify(provider.skills || []);
+    // Always serve the script - no validation needed here
+    // The script reads token/uid from URL params and form fields
+    const initialSkillsJson = JSON.stringify([]); // Start with empty skills array
 
     const script = `
 (function() {
@@ -401,8 +368,16 @@ exports.completeRegistrationScript = async (req: any, res: any) => {
     uidInput.value = uidFromUrl;
   }
 
+  // Initialize skills from existing skill tags on the page (if any)
   let skills = ${initialSkillsJson};
   const skillsContainer = document.getElementById('skillsContainer');
+  if (skillsContainer) {
+    const existingTags = skillsContainer.querySelectorAll('.skill-tag[data-skill]');
+    skills = Array.from(existingTags).map(function(tag) {
+      return tag.getAttribute('data-skill') || '';
+    }).filter(function(s) { return s; });
+  }
+
   const newSkillInput = document.getElementById('newSkill');
   const addSkillButton = document.getElementById('addSkillButton');
   const form = document.getElementById('profileForm');
