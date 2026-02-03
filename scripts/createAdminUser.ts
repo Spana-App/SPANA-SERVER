@@ -1,6 +1,6 @@
 import prisma from '../lib/database';
 import bcrypt from 'bcryptjs';
-import { generateUserReferenceAsync } from '../lib/idGenerator';
+const { generateUserId } = require('../lib/spanaIdGenerator');
 
 const email = 'xoli@spana.co.za';
 const password = 'TestPassword123!';
@@ -29,13 +29,14 @@ async function createAdminUser() {
     const hashedPassword = await bcrypt.hash(password, 12);
     console.log('✅ Password hashed');
 
-    // Generate reference number
-    const referenceNumber = await generateUserReferenceAsync();
-    console.log(`✅ Reference number generated: ${referenceNumber}`);
+    // Generate SPANA ID
+    const spanaAdminId = await generateUserId();
+    console.log(`✅ SPANA ID generated: ${spanaAdminId}`);
 
     // Create user
     const user = await prisma.user.create({
       data: {
+        id: spanaAdminId, // Use SPANA ID as the actual ID
         email: email.toLowerCase(),
         password: hashedPassword,
         firstName,
@@ -43,7 +44,9 @@ async function createAdminUser() {
         phone,
         role: 'admin',
         isEmailVerified: false, // Will need email verification
-        referenceNumber
+        profileImage: '',
+        walletBalance: 0,
+        status: 'active'
       }
     });
     console.log(`✅ User created: ${user.id}`);

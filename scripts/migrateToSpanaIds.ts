@@ -69,28 +69,25 @@ async function migrateToSpanaIds() {
     // 1. MIGRATE USERS
     // ============================================
     console.log('📝 Migrating Users...');
-    // Update ALL users - including those with old sequential IDs (SPN-USR-000001 format)
+    // NOTE: This script is deprecated - User IDs are now SPANA format directly
+    // Users are migrated via migrateUserIdToSpana.ts script
+    console.log('   ⚠️  User migration already completed via migrateUserIdToSpana.ts');
+    console.log('   ⚠️  User IDs are now SPANA format (SPN-{random})');
     const users = await prisma.user.findMany({
       where: {
-        OR: [
-          { referenceNumber: null },
-          { referenceNumber: { startsWith: 'SPN-USR-' } }, // Old sequential format
-          { referenceNumber: { not: { startsWith: 'SPN-' } } } // Other formats
-        ]
+        id: { not: { startsWith: 'SPN-' } } // Find users without SPANA IDs
       }
     });
 
     let userCount = 0;
     const userIds = new Set<string>();
     
-    // Batch update users
+    // Batch update users (migrate old cuid() IDs to SPANA format)
     for (const user of users) {
       const spanaId = await generateUniqueSpanaId('SPN', userIds);
       
-      await prisma.user.update({
-        where: { id: user.id },
-        data: { referenceNumber: spanaId }
-      });
+      // This migration requires updating primary key - use migrateUserIdToSpana.ts instead
+      console.log(`   ⚠️  Skipping user ${user.id} - use migrateUserIdToSpana.ts for primary key migration`);
       userCount++;
       
       if (userCount % 10 === 0) {

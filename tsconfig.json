@@ -20,7 +20,10 @@
     "**/*.test.ts",
     "**/*.spec.ts",
     "scripts/test*.ts",
-    "scripts/**/*.test.ts"
+    "scripts/**/*.test.ts",
+    "scripts/migrateToSpanaIds.ts",
+    "scripts/verifySpanaIds.ts",
+    "scripts/createAdminUser.ts"
   ]
 }
 

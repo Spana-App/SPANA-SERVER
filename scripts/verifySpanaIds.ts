@@ -15,7 +15,6 @@ async function verifySpanaIds() {
       orderBy: { createdAt: 'desc' },
       select: {
         id: true,
-        referenceNumber: true,
         email: true,
         firstName: true,
         lastName: true
@@ -26,8 +25,8 @@ async function verifySpanaIds() {
     users.forEach((user, idx) => {
       console.log(`   ${idx + 1}. ${user.firstName} ${user.lastName}`);
       console.log(`      Email: ${user.email}`);
-      console.log(`      SPANA ID: ${user.referenceNumber || 'NOT SET'}`);
-      console.log(`      Internal ID: ${user.id.substring(0, 20)}...`);
+      console.log(`      SPANA ID: ${user.id}`);
+      console.log(`      Format: ${user.id.startsWith('SPN-') ? '✅ SPANA Format' : '❌ Old Format'}`);
       console.log('');
     });
 
@@ -99,10 +98,10 @@ async function verifySpanaIds() {
     // Statistics
     const userStats = await prisma.user.aggregate({
       _count: {
-        referenceNumber: true
+        id: true
       },
       where: {
-        referenceNumber: { not: null }
+        id: { startsWith: 'SPN-' }
       }
     });
 
@@ -134,7 +133,7 @@ async function verifySpanaIds() {
     });
 
     console.log('📊 Statistics:');
-    console.log(`   Users with SPANA IDs: ${userStats._count.referenceNumber}`);
+    console.log(`   Users with SPANA IDs: ${userStats._count.id}`);
     console.log(`   Bookings with SPANA IDs: ${bookingStats._count.referenceNumber}`);
     console.log(`   Payments with SPANA IDs: ${paymentStats._count.referenceNumber}`);
     console.log(`   Messages with SPANA IDs: ${messageStats._count.referenceNumber}`);
