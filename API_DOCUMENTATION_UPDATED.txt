@@ -1,0 +1,2224 @@
+================================================================================
+SPANA BACKEND API DOCUMENTATION - COMPLETE UPDATED VERSION
+================================================================================
+
+Version: 3.0
+Last Updated: January 26, 2026
+
+BASE URLS:
+- Development: http://localhost:5003
+- Production: https://spana-server-5bhu.onrender.com
+- Email Service: https://email-microservice-pi.vercel.app
+
+IMPORTANT NOTES:
+1. NO /api PREFIX - All routes are mounted directly (e.g., /auth/login, NOT /api/auth/login)
+2. CATEGORY FIELD REMOVED - Services no longer have a category field
+3. ADMIN OTP AUTHENTICATION - All admin users with @spana.co.za emails require OTP login
+4. ADMIN-ONLY USER CREATION - Only admins can create other admins and service providers via CMS
+5. EMAIL SERVICE - Uses SMTP (Gmail) only, no Resend fallback
+
+================================================================================
+AUTHENTICATION
+================================================================================
+
+Most endpoints require a JWT token in the Authorization header:
+Authorization: Bearer <token>
+
+Token Expiry:
+- Regular Users (Customer/Provider): 7 days
+- Admin Users: 5 hours (for security)
+
+Admin Authentication: Admin users with @spana.co.za email addresses must use 
+OTP-based authentication (see Admin OTP Flow below).
+
+================================================================================
+SYSTEM FLOWS
+================================================================================
+
+1. CUSTOMER/CLIENT FLOW
+-----------------------
+1. Register → POST /auth/register (role: "customer")
+2. Login → POST /auth/login → Receive token
+3. Browse Services → GET /services or GET /services/discover
+4. View Service Details → GET /services/:id
+5. Create Booking Request → POST /bookings (status: pending_payment)
+6. Make Payment → POST /payments/intent (payment held in escrow)
+7. Wait for Provider Acceptance → Provider accepts via POST /bookings/:id/accept
+8. Chat Activated → Chat becomes available after payment confirmed
+9. Update Location → POST /bookings/:id/location (customer location)
+10. Wait for Provider Proximity → Provider must be within 2m for 5 minutes
+11. Service Starts Automatically → When proximity requirement met
+12. Track Progress → GET /workflows/:bookingId
+13. Service Completes → Provider completes via POST /bookings/:id/complete
+14. Chat Terminated → Chat closes when job is done
+15. Rate Provider → POST /bookings/:id/rate
+16. View History → GET /bookings
+17. Export Data (POPIA) → GET /privacy/export-data
+18. Create Complaint (if needed) → POST /complaints
+
+2. SERVICE PROVIDER FLOW
+--------------------------
+1. Admin Creates Provider → POST /admin/providers/register (admin only)
+2. Receive Email → Profile completion link sent via email
+3. Complete Profile → POST /complete-registration (set password, upload documents, etc.)
+4. Upload Documents → Via profile completion form
+5. Create Services → POST /services (requires complete profile)
+6. Wait for Admin Approval → Admin approves via POST /admin/services/:id/approve
+7. Receive Booking Requests → Via Socket.IO or GET /bookings
+8. Accept/Decline Requests → POST /bookings/:id/accept or POST /bookings/:id/decline
+9. Chat Token Generated → Chat token created when accepting request
+10. Wait for Customer Payment → Payment status becomes paid_to_escrow
+11. Chat Activated → Chat becomes available after payment confirmed
+12. Update Live Location → POST /bookings/:id/location (provider location)
+13. Meet Proximity Requirement → Within 2m of customer for 5 minutes
+14. Start Service → POST /bookings/:id/start (only after proximity requirement met)
+15. Complete Service → POST /bookings/:id/complete
+16. Chat Terminated → Chat closes when job is done
+17. Escrow Released → Automatically released to provider wallet
+18. Rate Customer → POST /bookings/:id/rate-customer
+19. Chat with Admin → GET /chat/history/:adminId (providers can initiate admin chat)
+20. View Performance → GET /admin/providers/:providerId/performance (admin) or own bookings
+
+3. ADMIN FLOW (OTP AUTHENTICATION)
+-----------------------------------
+1. Admin Created by Another Admin → POST /admin/admins/register (admin only)
+2. Receive Credentials Email → Auto-generated password sent via email
+3. Login → POST /auth/login with email and password
+4. Receive OTP → 6-digit code sent via email (valid for 5 hours) + embedded in API response
+5. Verify OTP → POST /admin/otp/verify with email + OTP → Receive admin token (5-hour expiry)
+6. Access Admin Dashboard → Use token for all admin endpoints
+7. Create Service Providers → POST /admin/providers/register
+8. Create Other Admins → POST /admin/admins/register
+9. Create Services → POST /admin/services (can create without providerId, assign later)
+10. Assign Services to Providers → POST /admin/services/:id/assign
+11. Verify Provider Documents → GET /admin/documents/pending → PUT /admin/documents/:docId/verify
+12. Approve/Reject Services → GET /admin/services → POST /admin/services/:id/approve
+13. Monitor Bookings → GET /admin/bookings
+14. View All Payments → GET /payments/history (admin sees all payments)
+15. View Wallet Summary → GET /admin/wallet/summary
+16. View Wallet Transactions → GET /admin/wallet/transactions
+17. Oversee All Chats → GET /chat/admin/all
+18. Resolve Complaints → GET /admin/complaints → PUT /admin/complaints/:id/resolve
+19. View Provider Performance → GET /admin/providers/:providerId/performance
+20. Update Own Profile → PUT /admin/profile (password, name, phone)
+
+Important: Admin login via POST /auth/login will return requiresOTP: true - you must 
+then use the OTP flow.
+
+================================================================================
+AUTHENTICATION ENDPOINTS
+================================================================================
+
+1. REGISTER USER
+----------------
+Endpoint: POST /auth/register
+Auth: None
+Description: Register a new user (customer or provider). Admin registration is disabled via this endpoint.
+
+Request Body:
+{
+  "email": "user@example.com",
+  "password": "SecurePass123!",
+  "firstName": "John",
+  "lastName": "Doe",
+  "phone": "+27123456789",
+  "role": "customer"
+}
+
+Role Options:
+- "customer" - Regular customer
+- "service_provider" - Service provider
+- "admin" - DISABLED (returns 403 Forbidden - admins must be created by other admins)
+
+Query Parameters (Optional):
+- sendEmails=true - Send welcome/verification emails (default: false)
+
+Response (201):
+{
+  "message": "User created successfully. Please login to get your access token.",
+  "user": {
+    "_id": "user_id",
+    "email": "user@example.com",
+    "firstName": "John",
+    "lastName": "Doe",
+    "phone": "+27123456789",
+    "role": "customer",
+    "isEmailVerified": false,
+    "customerDetails": {
+      "favouriteProviders": [],
+      "totalBookings": 0,
+      "ratingGivenAvg": 0
+    }
+  }
+}
+
+Notes:
+- Emails are NOT automatically sent (prevents spam)
+- To send emails, add ?sendEmails=true or include sendEmails: true in body
+- Admin registration via this endpoint is blocked (403 Forbidden)
+
+2. LOGIN
+--------
+Endpoint: POST /auth/login
+Auth: None
+Description: Login user and receive JWT token
+
+Request Body:
+{
+  "email": "user@example.com",
+  "password": "SecurePass123!"
+}
+
+Response (200) - For Regular Users:
+{
+  "message": "Login successful",
+  "token": "jwt_token_here",
+  "user": {
+    "_id": "user_id",
+    "email": "user@example.com",
+    "firstName": "John",
+    "lastName": "Doe",
+    "role": "customer",
+    "isEmailVerified": true
+  }
+}
+
+Response (200) - For Admin Users:
+{
+  "message": "OTP sent to your email. Please check your inbox or click the verification link.",
+  "requiresOTP": true,
+  "email": "admin@spana.co.za",
+  "otp": "123456",
+  "verificationLink": "https://spana-server-5bhu.onrender.com/admin/verify?token=...&email=...&otp=123456",
+  "nextStep": "verify_otp",
+  "expiresIn": "5 hours"
+}
+
+Important: Admin users must proceed with OTP flow (see Admin OTP endpoints below). 
+OTP is embedded in the response for immediate access.
+
+3. GET CURRENT USER
+-------------------
+Endpoint: GET /auth/me
+Auth: Required
+Description: Get current authenticated user's profile
+
+Response (200):
+{
+  "_id": "user_id",
+  "email": "user@example.com",
+  "firstName": "John",
+  "lastName": "Doe",
+  "role": "customer",
+  "isEmailVerified": true,
+  "walletBalance": 0,
+  "profileImage": "https://...",
+  "location": {
+    "type": "Point",
+    "coordinates": [28.0473, -26.2041],
+    "address": "123 Main St, Johannesburg"
+  }
+}
+
+Note: Admin users do NOT have walletBalance in the response.
+
+4. UPDATE PROFILE
+-----------------
+Endpoint: PUT /auth/profile or PATCH /auth/profile
+Auth: Required
+Description: Update current user's profile (all fields can be updated)
+
+Request Body:
+{
+  "firstName": "John",
+  "lastName": "Doe",
+  "phone": "+27123456789",
+  "profileImage": "https://...",
+  "location": {
+    "type": "Point",
+    "coordinates": [28.0473, -26.2041],
+    "address": "123 Main St, Johannesburg"
+  }
+}
+
+Response (200):
+{
+  "_id": "user_id",
+  "firstName": "John",
+  "lastName": "Doe",
+  "phone": "+27123456789",
+  "profileImage": "https://..."
+}
+
+5. UPLOAD PROFILE IMAGE
+-----------------------
+Endpoint: POST /auth/profile/image
+Auth: Required
+Content-Type: multipart/form-data
+
+Form Data:
+- image: (file) Image file (max 5MB)
+
+Response (200):
+{
+  "message": "Profile image uploaded successfully",
+  "url": "/uploads/user_id-1234567890.jpg"
+}
+
+================================================================================
+ADMIN ENDPOINTS
+================================================================================
+
+1. REQUEST OTP FOR ADMIN LOGIN
+-------------------------------
+Endpoint: POST /admin/otp/request
+Auth: None
+Description: Request 6-digit OTP for admin login (sent via email, non-blocking)
+
+Request Body:
+{
+  "email": "admin@spana.co.za"
+}
+
+Response (200):
+{
+  "message": "OTP sent to your email. Please check your inbox.",
+  "expiresIn": "5 hours"
+}
+
+Response (400):
+{
+  "message": "OTP is only available for admin emails (@spana.co.za)"
+}
+
+Notes:
+- OTP is a 6-digit code
+- Valid for 5 hours
+- Only available for @spana.co.za email addresses (or configured admin domains)
+- Email sending is non-blocking (API responds immediately)
+
+2. VERIFY OTP AND GET ADMIN TOKEN
+----------------------------------
+Endpoint: POST /admin/otp/verify
+Auth: None
+Description: Verify OTP and receive admin JWT token
+
+Request Body:
+{
+  "email": "admin@spana.co.za",
+  "otp": "123456"
+}
+
+Response (200):
+{
+  "message": "OTP verified successfully",
+  "token": "jwt_token_here",
+  "user": {
+    "_id": "admin_user_id",
+    "email": "admin@spana.co.za",
+    "firstName": "Admin",
+    "lastName": "User",
+    "role": "admin",
+    "isEmailVerified": true
+  },
+  "expiresIn": "5 hours"
+}
+
+Response (400):
+{
+  "message": "Invalid or expired OTP"
+}
+
+Notes:
+- OTP can only be used once
+- Admin token expires after 5 hours (for security)
+- Use this token for all subsequent admin requests
+
+3. VERIFY ADMIN EMAIL
+---------------------
+Endpoint: GET /admin/verify
+Auth: None
+Description: Verify admin email using token from verification email. Shows confetti page with OTP code.
+
+Query Parameters:
+- token: Verification token from email
+- email: Admin email address
+- otp: (optional) OTP code (if provided, shows on page)
+
+Example: GET /admin/verify?token=abc123&email=admin@spana.co.za&otp=123456
+
+Response (200): HTML page with confetti animation and OTP code displayed
+Response (400): HTML error page if token invalid or email missing
+
+4. RESEND ADMIN VERIFICATION EMAIL
+------------------------------------
+Endpoint: POST /admin/resend-verification
+Auth: None
+Description: Resend admin verification email
+
+Request Body:
+{
+  "email": "admin@spana.co.za"
+}
+
+Response (200):
+{
+  "message": "Verification email sent successfully. Please check your inbox (and spam folder).",
+  "email": "admin@spana.co.za",
+  "expiresIn": "24 hours"
+}
+
+5. GET ALL BOOKINGS (ADMIN)
+----------------------------
+Endpoint: GET /admin/bookings
+Auth: Required (Admin)
+Description: Get all bookings with full details
+
+Response (200): Array of bookings with nested relationships
+
+6. GET ALL USERS (ADMIN)
+------------------------
+Endpoint: GET /admin/users
+Auth: Required (Admin)
+Description: Get all users with role-specific details
+
+Response (200): Array of users with role-specific data
+
+7. GET ALL SERVICES (ADMIN)
+--------------------------
+Endpoint: GET /admin/services
+Auth: Required (Admin)
+Description: Get all services including pending approval and unassigned services
+
+Response (200): Array of services with provider details
+
+8. CREATE SERVICE (ADMIN)
+--------------------------
+Endpoint: POST /admin/services
+Auth: Required (Admin)
+Description: Create a service. Can create without providerId and assign later.
+
+Request Body:
+{
+  "title": "Plumbing Service",
+  "description": "Professional plumbing repairs",
+  "price": 500,
+  "duration": 60,
+  "providerId": "provider_id",
+  "mediaUrl": "https://example.com/image.jpg",
+  "status": "active"
+}
+
+Fields:
+- title (required): Service title
+- description (required): Service description
+- price (required): Service price
+- duration (optional): Duration in minutes
+- providerId (optional): Provider ID (can be assigned later)
+- mediaUrl (optional): Service image URL
+- status (optional): Service status (default: "draft")
+
+Response (201):
+{
+  "message": "Service created successfully",
+  "service": {
+    "id": "service_id",
+    "title": "Plumbing Service",
+    "adminApproved": false,
+    "status": "draft",
+    "providerId": null
+  }
+}
+
+Notes:
+- If providerId is not provided, service is created without a provider
+- Admin can assign provider later using POST /admin/services/:id/assign
+- Service requires admin approval before being visible to customers
+
+9. ASSIGN SERVICE TO PROVIDER
+------------------------------
+Endpoint: POST /admin/services/:id/assign
+Auth: Required (Admin)
+Description: Assign a service to a provider
+
+Request Body:
+{
+  "providerId": "provider_id"
+}
+
+Response (200):
+{
+  "message": "Service assigned to provider successfully",
+  "service": {
+    "id": "service_id",
+    "providerId": "provider_id",
+    "provider": {
+      "user": {
+        "firstName": "Jane",
+        "lastName": "Smith"
+      }
+    }
+  }
+}
+
+10. UNASSIGN SERVICE FROM PROVIDER
+-----------------------------------
+Endpoint: POST /admin/services/:id/unassign
+Auth: Required (Admin)
+Description: Unassign a service from its current provider
+
+Response (200):
+{
+  "message": "Service unassigned from provider successfully",
+  "service": {
+    "id": "service_id",
+    "providerId": null
+  }
+}
+
+11. UPDATE SERVICE (ADMIN)
+---------------------------
+Endpoint: PUT /admin/services/:id
+Auth: Required (Admin)
+Description: Update any service
+
+Request Body:
+{
+  "title": "Updated Title",
+  "price": 600,
+  "description": "Updated description",
+  "status": "active"
+}
+
+Response (200):
+{
+  "message": "Service updated successfully",
+  "service": {
+    "id": "service_id",
+    "title": "Updated Title",
+    "price": 600
+  }
+}
+
+12. APPROVE/REJECT SERVICE (ADMIN)
+-----------------------------------
+Endpoint: POST /admin/services/:id/approve
+Auth: Required (Admin)
+Description: Approve or reject a service (makes it available to customers)
+
+Request Body:
+{
+  "approved": true,
+  "rejectionReason": null
+}
+
+Or for rejection:
+{
+  "approved": false,
+  "rejectionReason": "Service description unclear"
+}
+
+Response (200):
+{
+  "message": "Service approved and made available to clients",
+  "service": {
+    "id": "service_id",
+    "adminApproved": true,
+    "approvedBy": "admin_user_id",
+    "approvedAt": "2025-11-08T15:00:00Z",
+    "status": "active"
+  }
+}
+
+13. DELETE SERVICE (ADMIN)
+---------------------------
+Endpoint: DELETE /admin/services/:id
+Auth: Required (Admin)
+Description: Delete a service
+
+Response (200):
+{
+  "message": "Service deleted successfully"
+}
+
+14. REGISTER SERVICE PROVIDER (ADMIN)
+--------------------------------------
+Endpoint: POST /admin/providers/register
+Auth: Required (Admin)
+Description: Create a new service provider via CMS. Provider receives email with profile completion link to set their own password.
+
+Request Body:
+{
+  "firstName": "John",
+  "lastName": "Doe",
+  "email": "provider@example.com",
+  "phone": "+27123456789"
+}
+
+Response (201):
+{
+  "message": "Service provider created successfully",
+  "user": {
+    "id": "user_id",
+    "email": "provider@example.com",
+    "firstName": "John",
+    "lastName": "Doe",
+    "role": "service_provider"
+  },
+  "profileCompletionLink": "https://spana-server-5bhu.onrender.com/complete-registration?token=...&uid=..."
+}
+
+Notes:
+- Provider is created with a placeholder password
+- Provider must complete profile via the link to set their own password
+- Email is sent with profile completion link
+
+15. REGISTER ADMIN (ADMIN)
+---------------------------
+Endpoint: POST /admin/admins/register
+Auth: Required (Admin)
+Description: Create a new admin user via CMS. Admin receives email with auto-generated password.
+
+Request Body:
+{
+  "firstName": "Admin",
+  "lastName": "User",
+  "email": "newadmin@spana.co.za",
+  "phone": "+27123456789"
+}
+
+Requirements:
+- Email must be from admin domain (@spana.co.za or configured domain)
+
+Response (201):
+{
+  "message": "Admin created successfully. Credentials email sent with auto-generated password.",
+  "user": {
+    "id": "user_id",
+    "email": "newadmin@spana.co.za",
+    "firstName": "Admin",
+    "lastName": "User",
+    "role": "admin"
+  },
+  "password": "FQ5cvhxD4C#V",
+  "note": "Password sent via email. Admin should change password after first login."
+}
+
+Notes:
+- Auto-generated secure 12-character password
+- Password is sent via email
+- Admin can change password via PUT /admin/profile
+
+16. UPDATE ADMIN PROFILE
+-------------------------
+Endpoint: PUT /admin/profile
+Auth: Required (Admin)
+Description: Updates the authenticated admin's profile (firstName, lastName, phone, password).
+
+Request Body:
+{
+  "firstName": "Updated",
+  "lastName": "Name",
+  "phone": "+27987654321",
+  "password": "NewSecurePassword123!"
+}
+
+Password Requirements:
+- Minimum 8 characters
+- At least one uppercase letter
+- At least one lowercase letter
+- At least one number
+- At least one special character
+
+Response (200):
+{
+  "message": "Profile updated successfully",
+  "user": {
+    "id": "user_id",
+    "email": "admin@spana.co.za",
+    "firstName": "Updated",
+    "lastName": "Name",
+    "phone": "+27987654321",
+    "role": "admin"
+  }
+}
+
+17. GET ALL PAYMENTS (ADMIN)
+-----------------------------
+Endpoint: GET /payments/history
+Auth: Required (Admin)
+Description: Get all payments in the system (admin sees all payments)
+
+Response (200): Array of all payments with customer, booking, and service information
+
+Note: Regular users only see their own payments. Admins see all payments.
+
+18. GET PENDING DOCUMENTS (ADMIN)
+----------------------------------
+Endpoint: GET /admin/documents/pending
+Auth: Required (Admin)
+Description: Get all documents pending verification
+
+Response (200): Array of pending documents with user information
+
+19. VERIFY DOCUMENT (ADMIN)
+----------------------------
+Endpoint: PUT /admin/documents/:docId/verify
+Auth: Required (Admin)
+Description: Verify or reject a provider document
+
+Request Body:
+{
+  "userId": "user_id",
+  "verified": true
+}
+
+Response (200):
+{
+  "message": "Document verification updated",
+  "document": {
+    "id": "doc_id",
+    "verified": true,
+    "verifiedBy": "admin_user_id",
+    "verifiedAt": "2025-11-08T15:00:00Z"
+  }
+}
+
+20. GET WALLET SUMMARY (ADMIN)
+-------------------------------
+Endpoint: GET /admin/wallet/summary
+Auth: Required (Admin)
+Description: Get Spana wallet summary (total held, released, commission)
+
+Response (200):
+{
+  "id": "wallet_id",
+  "totalHeld": 5000.00,
+  "totalReleased": 4500.00,
+  "totalCommission": 750.00,
+  "transactions": [...]
+}
+
+21. GET WALLET TRANSACTIONS (ADMIN)
+------------------------------------
+Endpoint: GET /admin/wallet/transactions
+Auth: Required (Admin)
+Description: Get all wallet transactions
+
+Response (200): Array of wallet transactions
+
+22. GET PROVIDER PERFORMANCE (ADMIN)
+-------------------------------------
+Endpoint: GET /admin/providers/:providerId/performance
+Auth: Required (Admin)
+Description: Get detailed performance metrics for a provider
+
+Response (200):
+{
+  "provider": {
+    "id": "provider_id",
+    "name": "Jane Smith",
+    "email": "jane@example.com",
+    "rating": 4.5,
+    "totalReviews": 10
+  },
+  "metrics": {
+    "totalBookings": 25,
+    "totalRevenue": 15000.00,
+    "slaBreaches": 2,
+    "slaComplianceRate": "92.00",
+    "averageRating": 4.5
+  }
+}
+
+23. GET ALL COMPLAINTS (ADMIN)
+-------------------------------
+Endpoint: GET /admin/complaints
+Auth: Required (Admin)
+Description: Get all complaints with optional filters
+
+Query Parameters:
+- status (optional): "open", "resolved", "closed"
+- severity (optional): "low", "medium", "high"
+
+Response (200): Array of complaints with booking and service information
+
+24. RESOLVE COMPLAINT (ADMIN)
+------------------------------
+Endpoint: PUT /admin/complaints/:id/resolve
+Auth: Required (Admin)
+Description: Resolve or close a complaint
+
+Request Body:
+{
+  "status": "resolved",
+  "resolution": "Issue resolved, refund processed"
+}
+
+Response (200):
+{
+  "message": "Complaint resolved",
+  "complaint": {
+    "id": "complaint_id",
+    "status": "resolved",
+    "resolvedBy": "admin_user_id",
+    "resolvedAt": "2025-11-08T15:00:00Z",
+    "resolution": "Issue resolved, refund processed"
+  }
+}
+
+================================================================================
+STATISTICS ENDPOINTS (PUBLIC)
+================================================================================
+
+All stats endpoints are PUBLIC (no authentication required). Perfect for website display.
+
+1. GET PLATFORM STATISTICS
+---------------------------
+Endpoint: GET /stats/platform
+Auth: None
+Description: Get overall platform statistics
+
+Response (200):
+{
+  "users": {
+    "total": 18,
+    "providers": 8,
+    "customers": 8,
+    "activeProviders": 8
+  },
+  "services": {
+    "total": 16
+  },
+  "bookings": {
+    "total": 30,
+    "completed": 6,
+    "completionRate": "20.00"
+  },
+  "revenue": {
+    "total": 4500.50
+  }
+}
+
+2. GET PROVIDERS BY LOCATION
+-----------------------------
+Endpoint: GET /stats/providers/location
+Auth: None
+Description: Get provider statistics grouped by location/city
+
+Response (200):
+{
+  "locations": [
+    {
+      "city": "Johannesburg",
+      "providerCount": 5,
+      "totalServices": 10,
+      "completedBookings": 15,
+      "averageRating": "4.25"
+    }
+  ],
+  "total": 2
+}
+
+3. GET BOOKING TRENDS
+---------------------
+Endpoint: GET /stats/bookings/trends
+Auth: None
+Description: Get booking trends for the last 30 days
+
+Response (200):
+{
+  "trends": [
+    {
+      "date": "2025-11-01",
+      "total": 5,
+      "completed": 2,
+      "revenue": 1200.00
+    }
+  ],
+  "period": "30 days"
+}
+
+4. GET TOP PROVIDERS
+--------------------
+Endpoint: GET /stats/providers/top?limit=10
+Auth: None
+Description: Get top-rated providers
+
+Query Parameters:
+- limit (optional): Number of providers (default: 10, max: 50)
+
+Response (200):
+{
+  "providers": [
+    {
+      "id": "provider_id",
+      "name": "Jane Smith",
+      "email": "jane@example.com",
+      "rating": 4.8,
+      "totalReviews": 25,
+      "totalBookings": 45,
+      "totalRevenue": 18000.00,
+      "location": {...}
+    }
+  ],
+  "limit": 10
+}
+
+5. GET REVENUE STATISTICS
+--------------------------
+Endpoint: GET /stats/revenue
+Auth: None
+Description: Get revenue statistics (total, commission, payouts)
+
+Response (200):
+{
+  "total": {
+    "revenue": 15000.00,
+    "commission": 2250.00,
+    "payouts": 12750.00
+  },
+  "byService": [
+    {
+      "serviceId": "service_id_1",
+      "serviceTitle": "Plumbing Service",
+      "revenue": 8000.00
+    }
+  ],
+  "commissionRate": "15.00"
+}
+
+Note: Revenue is grouped by service (category field removed).
+
+================================================================================
+SERVICES ENDPOINTS
+================================================================================
+
+1. GET ALL SERVICES
+-------------------
+Endpoint: GET /services
+Auth: Optional (non-admin see only approved services)
+Description: Get all available services
+
+Query Parameters:
+- q (optional): Search term (searches title and description)
+- limit (optional): Results per page
+- offset (optional): Pagination offset
+
+Response (200): Array of services
+
+Note: Customers see services without provider details (Uber-style).
+
+2. DISCOVER SERVICES
+---------------------
+Endpoint: GET /services/discover
+Auth: Optional (location-based suggestions for authenticated users)
+Description: Get recently booked services and location-based suggestions
+
+Query Parameters:
+- limit (optional): Number of recently booked services (default: 3)
+- suggestionsLimit (optional): Number of suggestions (default: 5, max: 20)
+
+Response (200):
+{
+  "recentlyBooked": [...],
+  "suggested": [...],
+  "suggestionType": "location"
+}
+
+Notes:
+- Returns 3 recently booked services by default
+- Returns 5 location-based suggestions for authenticated users
+- Falls back to popular services if no location-based suggestions available
+- suggestionType can be "location" or "popular"
+
+3. GET SERVICE BY ID
+---------------------
+Endpoint: GET /services/:id
+Auth: Optional
+Description: Get detailed service information
+
+Response (200): Service object with provider details
+
+4. CREATE SERVICE (PROVIDER)
+-----------------------------
+Endpoint: POST /services
+Auth: Required (Provider, profile must be complete)
+Description: Create a new service (requires admin approval)
+
+Request Body:
+{
+  "title": "Plumbing Service",
+  "description": "Professional plumbing repairs",
+  "price": 500,
+  "duration": 60,
+  "mediaUrl": "https://example.com/image.jpg",
+  "status": "active"
+}
+
+Fields:
+- title (required): Service title
+- description (required): Service description
+- price (required): Service price
+- duration (optional): Duration in minutes
+- mediaUrl (optional): Service image URL
+- status (optional): Service status (default: "active")
+
+Response (201):
+{
+  "id": "service_id",
+  "title": "Plumbing Service",
+  "description": "Professional plumbing repairs",
+  "price": 500,
+  "duration": 60,
+  "status": "active",
+  "adminApproved": false,
+  "provider": {
+    "rating": 4.5
+  }
+}
+
+Notes:
+- Service is created with adminApproved: false
+- Admin must approve before it's visible to customers
+- Provider profile must be 100% complete
+- duration field is optional
+
+5. UPDATE SERVICE (PROVIDER)
+-----------------------------
+Endpoint: PUT /services/:id
+Auth: Required (Provider, profile must be complete)
+Description: Update own service
+
+Request Body:
+{
+  "title": "Updated Title",
+  "price": 600,
+  "description": "Updated description"
+}
+
+Response (200): Updated service object
+
+6. DELETE SERVICE (PROVIDER)
+-----------------------------
+Endpoint: DELETE /services/:id
+Auth: Required (Provider, profile must be complete)
+Description: Delete own service
+
+Response (200):
+{
+  "message": "Service deleted successfully"
+}
+
+================================================================================
+BOOKINGS ENDPOINTS
+================================================================================
+
+1. CREATE BOOKING REQUEST
+--------------------------
+Endpoint: POST /bookings
+Auth: Required (Customer)
+Description: Create a booking request (Uber-style). Customer must pay first.
+
+Request Body:
+{
+  "serviceId": "service_id",
+  "date": "2025-11-15T10:00:00Z",
+  "time": "10:00",
+  "location": {
+    "type": "Point",
+    "coordinates": [28.0473, -26.2041],
+    "address": "123 Main St, Johannesburg"
+  },
+  "notes": "Please arrive on time",
+  "estimatedDurationMinutes": 60,
+  "jobSize": "medium",
+  "customPrice": null
+}
+
+Job Size Options:
+- "small" - 1.0x base price
+- "medium" - 1.5x base price
+- "large" - 2.0x base price
+- "custom" - Requires customPrice field
+
+Response (201):
+{
+  "id": "booking_id",
+  "serviceId": "service_id",
+  "date": "2025-11-15T10:00:00Z",
+  "time": "10:00",
+  "status": "pending_payment",
+  "requestStatus": "pending",
+  "paymentStatus": "pending",
+  "jobSize": "medium",
+  "basePrice": 500,
+  "jobSizeMultiplier": 1.5,
+  "calculatedPrice": 750,
+  "service": {...}
+}
+
+Notes:
+- Initial status is pending_payment (customer must pay first)
+- After payment, status changes to pending and provider can accept/decline
+- Provider receives notification via Socket.IO
+
+2. ACCEPT BOOKING REQUEST (PROVIDER)
+-------------------------------------
+Endpoint: POST /bookings/:id/accept
+Auth: Required (Provider, profile must be complete)
+Description: Provider accepts a booking request. Generates provider chat token.
+
+Response (200):
+{
+  "message": "Booking request accepted. Customer can now proceed with payment.",
+  "booking": {
+    "id": "booking_id",
+    "requestStatus": "accepted",
+    "providerAcceptedAt": "2025-11-08T15:00:00Z",
+    "status": "confirmed",
+    "providerChatToken": "chat_token_here"
+  }
+}
+
+Notes:
+- Provider can only accept if booking status is pending
+- After acceptance, customer can make payment
+- Provider chat token is generated (customer token generated after payment)
+- Chat becomes active when both tokens exist
+- Customer receives notification via Socket.IO
+
+3. DECLINE BOOKING REQUEST (PROVIDER)
+--------------------------------------
+Endpoint: POST /bookings/:id/decline
+Auth: Required (Provider, profile must be complete)
+Description: Provider declines a booking request
+
+Request Body:
+{
+  "reason": "Not available at that time"
+}
+
+Response (200):
+{
+  "message": "Booking request declined",
+  "booking": {
+    "id": "booking_id",
+    "requestStatus": "declined",
+    "providerDeclinedAt": "2025-11-08T15:00:00Z",
+    "declineReason": "Not available at that time",
+    "status": "cancelled"
+  }
+}
+
+4. GET USER BOOKINGS
+---------------------
+Endpoint: GET /bookings
+Auth: Required
+Description: Get all bookings for current user (customer sees their bookings, provider sees their assigned bookings)
+
+Response (200): Array of bookings
+
+5. GET BOOKING BY ID
+---------------------
+Endpoint: GET /bookings/:id
+Auth: Required (Customer/Provider/Admin)
+Description: Get detailed booking information
+
+Response (200): Booking object with full details
+
+6. UPDATE BOOKING STATUS
+-------------------------
+Endpoint: PUT /bookings/:id/status
+Auth: Required
+Description: Update booking status
+
+7. CANCEL BOOKING
+------------------
+Endpoint: PUT /bookings/:id/cancel
+Auth: Required (Customer or Provider)
+Description: Cancel a booking
+
+Request Body:
+{
+  "reason": "Change of plans"
+}
+
+Response (200): Cancelled booking object
+
+8. RATE BOOKING (CUSTOMER RATES PROVIDER)
+------------------------------------------
+Endpoint: POST /bookings/:id/rate
+Auth: Required (Customer)
+Description: Customer rates the provider after service completion
+
+Request Body:
+{
+  "rating": 5,
+  "review": "Excellent service!"
+}
+
+Response (200): Updated booking with rating
+
+9. RATE CUSTOMER (PROVIDER RATES CUSTOMER)
+-------------------------------------------
+Endpoint: POST /bookings/:id/rate-customer
+Auth: Required (Provider, profile must be complete)
+Description: Provider rates the customer
+
+Request Body:
+{
+  "rating": 5,
+  "review": "Great customer!"
+}
+
+Response (200): Updated booking with customer rating
+
+10. START BOOKING (PROVIDER)
+-----------------------------
+Endpoint: POST /bookings/:id/start
+Auth: Required (Provider, profile must be complete)
+Description: Start service (only after proximity requirement met)
+
+Response (200): Updated booking with started status
+
+11. COMPLETE BOOKING (PROVIDER)
+--------------------------------
+Endpoint: POST /bookings/:id/complete
+Auth: Required (Provider, profile must be complete)
+Description: Complete a service (triggers escrow release and chat termination)
+
+Response (200):
+{
+  "id": "booking_id",
+  "status": "completed",
+  "completedAt": "2025-11-15T11:30:00Z",
+  "actualDurationMinutes": 90,
+  "slaBreached": true,
+  "slaPenaltyAmount": 12.5,
+  "paymentStatus": "released_to_provider",
+  "providerPayoutAmount": 637.5,
+  "commissionAmount": 112.5,
+  "chatActive": false,
+  "chatTerminatedAt": "2025-11-15T11:30:00Z"
+}
+
+Notes:
+- Escrow is automatically released to provider wallet
+- Chat is terminated (chatActive set to false)
+- SLA is calculated and penalties applied if exceeded
+- Commission (15%) is deducted from base amount
+- Tips go 100% to provider
+
+12. UPDATE LOCATION
+--------------------
+Endpoint: POST /bookings/:id/location
+Auth: Required
+Description: Update live location (customer or provider)
+
+Request Body:
+{
+  "location": {
+    "type": "Point",
+    "coordinates": [28.0473, -26.2041],
+    "address": "123 Main St, Johannesburg"
+  }
+}
+
+Response (200): Updated booking with new location
+
+================================================================================
+CHAT ENDPOINTS
+================================================================================
+
+1. GET BOOKING CHAT
+-------------------
+Endpoint: GET /chat/booking/:bookingId
+Auth: Required
+Description: Get chat messages for a specific booking (customer, provider, or admin)
+
+Query Parameters:
+- chatToken: Chat token (required for customer/provider, optional for admin)
+
+Response (200):
+{
+  "messages": [...],
+  "booking": {
+    "id": "booking_id",
+    "chatActive": true
+  }
+}
+
+Notes:
+- Customer and provider need valid chat tokens
+- Admin can view all booking chats without token
+- Chat is only active when both customer and provider tokens exist
+- Chat terminates when job is completed
+
+2. GET CHAT HISTORY (DIRECT CHAT)
+-----------------------------------
+Endpoint: GET /chat/history/:userId
+Auth: Required
+Description: Get direct chat history between two users
+
+Response (200):
+{
+  "messages": [...],
+  "chatWith": {
+    "id": "user_id",
+    "role": "admin"
+  }
+}
+
+Permissions:
+- Providers can chat with admins (provider-initiated only)
+- Customers can chat with providers (bidirectional)
+- Admin can chat with anyone
+- Customers cannot chat with admins directly (use complaint system)
+
+3. GET MY CHATS
+----------------
+Endpoint: GET /chat/my-chats
+Auth: Required
+Description: Get list of all active chats for current user
+
+Response (200):
+{
+  "chats": [
+    {
+      "userId": "user_id",
+      "userName": "Jane Smith",
+      "lastMessage": "Hello, I'm on my way",
+      "lastMessageAt": "2025-11-08T15:00:00Z",
+      "unreadCount": 2,
+      "chatType": "direct"
+    },
+    {
+      "bookingId": "booking_id",
+      "serviceTitle": "Plumbing Service",
+      "lastMessage": "I've arrived",
+      "lastMessageAt": "2025-11-08T15:30:00Z",
+      "unreadCount": 0,
+      "chatType": "booking"
+    }
+  ]
+}
+
+4. SEND MESSAGE
+----------------
+Endpoint: POST /chat/send
+Auth: Required
+Description: Send a chat message
+
+Request Body:
+{
+  "toUserId": "user_id",
+  "message": "Hello, I'm on my way",
+  "chatType": "direct"
+}
+
+Or for booking chat:
+{
+  "bookingId": "booking_id",
+  "message": "I've arrived at the location",
+  "chatToken": "chat_token_here"
+}
+
+Response (200): Message object
+
+5. GET PHONE NUMBER FOR USER
+-----------------------------
+Endpoint: GET /chat/phone/:userId
+Auth: Required
+Description: Get phone number for a user (permission-based)
+
+Response (200):
+{
+  "userId": "user_id",
+  "phone": "+27123456789"
+}
+
+Permissions:
+- Admin can see all phone numbers
+- Provider can see customer phone if they have an active booking with chat active
+- Customer can see provider phone if they have an active booking with chat active
+
+6. GET PHONE NUMBERS FOR BOOKING
+---------------------------------
+Endpoint: GET /chat/phone/booking/:bookingId
+Auth: Required
+Description: Get phone numbers for customer and provider in a booking
+
+Response (200):
+{
+  "bookingId": "booking_id",
+  "customer": {
+    "userId": "customer_id",
+    "phone": "+27123456789"
+  },
+  "provider": {
+    "userId": "provider_id",
+    "phone": "+27987654321"
+  }
+}
+
+Permissions:
+- Only available if chat is active or user is admin
+- Customer and provider can see each other's numbers
+- Admin can always see phone numbers
+
+7. GET ALL CHATS (ADMIN)
+--------------------------
+Endpoint: GET /chat/admin/all
+Auth: Required (Admin)
+Description: Get all chats in the system (admin oversight)
+
+Query Parameters:
+- type (optional): Filter by chat type ("booking", "direct", "admin")
+- bookingId (optional): Filter by booking ID
+- limit (optional): Max number of messages (default: 50)
+
+Response (200): Array of messages with sender and receiver information
+
+================================================================================
+PAYMENTS ENDPOINTS
+================================================================================
+
+1. CREATE PAYMENT INTENT
+-------------------------
+Endpoint: POST /payments/intent
+Auth: Required (Customer)
+Description: Create payment intent (PayFast or simulation mode). Generates customer chat token.
+
+Request Body:
+{
+  "bookingId": "booking_id",
+  "amount": 750,
+  "currency": "ZAR",
+  "tipAmount": 50,
+  "simulate": true
+}
+
+Response (200) - Simulation Mode:
+{
+  "paymentId": "payment_id",
+  "simulated": true,
+  "message": "Payment simulated successfully",
+  "invoiceNumber": "INV-20251108-ABC12",
+  "amount": 800,
+  "baseAmount": 750,
+  "tipAmount": 50,
+  "currency": "ZAR",
+  "status": "completed",
+  "escrowStatus": "held",
+  "customerChatToken": "chat_token_here"
+}
+
+Notes:
+- Payment is held in escrow automatically
+- Booking status changes to confirmed
+- Customer chat token is generated
+- Chat becomes active if provider token already exists
+- Provider receives notification
+
+2. CONFIRM PAYMENT
+------------------
+Endpoint: POST /payments/confirm
+Auth: Required (Customer)
+Description: Confirm payment
+
+3. GET PAYMENT HISTORY
+----------------------
+Endpoint: GET /payments/history
+Auth: Required
+Description: Get payment history for current user (admin sees all payments)
+
+Response (200): Array of payments
+
+Note: Admin users see all payments in the system.
+
+4. REFUND PAYMENT
+------------------
+Endpoint: POST /payments/refund
+Auth: Required
+Description: Request a refund
+
+5. RELEASE FUNDS (ADMIN)
+-------------------------
+Endpoint: POST /payments/:bookingId/release
+Auth: Required (Admin)
+Description: Manually release funds from escrow (admin only)
+
+Response (200): Payment object with released status
+
+================================================================================
+USERS ENDPOINTS
+================================================================================
+
+1. GET ALL USERS (ADMIN)
+-------------------------
+Endpoint: GET /users
+Auth: Required (Admin)
+Description: Get all users with role-specific details
+
+Response (200): Array of users with role-specific data
+
+2. GET USER BY ID
+-----------------
+Endpoint: GET /users/:id
+Auth: Required
+Description: Get user details (self or admin)
+
+Response (200): User object
+
+3. UPDATE USER PROFILE
+----------------------
+Endpoint: PUT /users/:id
+Auth: Required (Self or Admin)
+Description: Update user profile
+
+Request Body:
+{
+  "firstName": "John",
+  "lastName": "Doe",
+  "phone": "+27123456789",
+  "profileImage": "https://...",
+  "location": {...}
+}
+
+Response (200): Updated user object
+
+4. DELETE USER (ADMIN)
+-----------------------
+Endpoint: DELETE /users/:id
+Auth: Required (Admin)
+Description: Delete a user
+
+Response (200):
+{
+  "message": "User deleted successfully"
+}
+
+5. GET ALL PROVIDERS
+---------------------
+Endpoint: GET /users/providers/all
+Auth: Optional
+Description: Get all active providers (public endpoint)
+
+Response (200): Array of providers
+
+6. VERIFY PROVIDER (ADMIN)
+---------------------------
+Endpoint: POST /users/verify
+Auth: Required (Admin)
+Description: Verify a service provider
+
+Request Body:
+{
+  "userId": "user_id",
+  "verified": true
+}
+
+Response (200):
+{
+  "message": "Provider verified successfully",
+  "user": {
+    "id": "user_id",
+    "serviceProvider": {
+      "isVerified": true
+    }
+  }
+}
+
+================================================================================
+COMPLAINTS ENDPOINTS
+================================================================================
+
+1. CREATE COMPLAINT
+-------------------
+Endpoint: POST /complaints
+Auth: Required (Customer or Provider)
+Description: Create a complaint about a booking, service, or user (can report harassment)
+
+Request Body:
+{
+  "bookingId": "booking_id",
+  "serviceId": "service_id",
+  "type": "service_quality",
+  "severity": "medium",
+  "title": "Service quality issue",
+  "description": "The service was not as expected",
+  "reportedAgainst": "provider_user_id",
+  "attachments": ["https://..."]
+}
+
+Complaint Types:
+- "service_quality"
+- "payment_issue"
+- "provider_behavior" (for harassment reports)
+- "customer_behavior"
+
+Severity Levels:
+- "low"
+- "medium"
+- "high"
+
+Response (201):
+{
+  "message": "Complaint created successfully",
+  "complaint": {
+    "id": "complaint_id",
+    "type": "service_quality",
+    "severity": "medium",
+    "status": "open",
+    "title": "Service quality issue",
+    "reportedBy": "user_id",
+    "reportedByRole": "customer",
+    "reportedAgainst": "provider_user_id"
+  }
+}
+
+2. GET MY COMPLAINTS
+---------------------
+Endpoint: GET /complaints/my-complaints
+Auth: Required
+Description: Get all complaints created by current user
+
+Response (200): Array of complaints
+
+3. GET COMPLAINT BY ID
+-----------------------
+Endpoint: GET /complaints/:id
+Auth: Required
+Description: Get detailed complaint information
+
+Response (200): Complaint object
+
+================================================================================
+PROVIDER ENDPOINTS
+================================================================================
+
+1. SET ONLINE STATUS
+---------------------
+Endpoint: PUT /provider/online-status
+Auth: Required (Provider)
+Description: Update provider online/offline status
+
+Request Body:
+{
+  "isOnline": true
+}
+
+Response (200):
+{
+  "message": "Online status updated",
+  "isOnline": true
+}
+
+2. GET ONLINE STATUS
+--------------------
+Endpoint: GET /provider/online-status
+Auth: Required (Provider)
+Description: Get current provider online status
+
+Response (200):
+{
+  "isOnline": true
+}
+
+3. UPDATE PROVIDER LOCATION
+---------------------------
+Endpoint: PUT /provider/location
+Auth: Required (Provider)
+Description: Update provider's current location
+
+Request Body:
+{
+  "location": {
+    "type": "Point",
+    "coordinates": [28.0473, -26.2041],
+    "address": "123 Main St, Johannesburg"
+  }
+}
+
+Or Query Parameters:
+- lng: Longitude
+- lat: Latitude
+- address: Address string
+
+Response (200):
+{
+  "message": "Location updated successfully"
+}
+
+4. UPDATE CUSTOMER LOCATION
+----------------------------
+Endpoint: PUT /provider/customer/location
+Auth: Required (Customer)
+Description: Update customer's current location
+
+Request Body: Same as provider location
+
+5. GET ALL ONLINE PROVIDERS (ADMIN)
+------------------------------------
+Endpoint: GET /provider/online
+Auth: Required (Admin)
+Description: Get all currently online providers
+
+Response (200): Array of online providers
+
+================================================================================
+REGISTRATION ENDPOINTS
+================================================================================
+
+1. COMPLETE PROVIDER REGISTRATION (GET)
+---------------------------------------
+Endpoint: GET /complete-registration
+Auth: None
+Description: Show profile completion form for service providers
+
+Query Parameters:
+- token: Verification token from email
+- uid: User ID
+
+Response (200): HTML form for profile completion
+
+2. SUBMIT PROFILE COMPLETION (POST)
+------------------------------------
+Endpoint: POST /complete-registration
+Auth: None
+Description: Submit completed profile (password, documents, etc.)
+
+Request Body (Form Data):
+{
+  "token": "verification_token",
+  "uid": "user_id",
+  "password": "SecurePass123!",
+  "confirmPassword": "SecurePass123!",
+  "profileImage": "https://...",
+  "skills": ["plumbing", "electrical"],
+  "experienceYears": 5,
+  "location": {...}
+}
+
+Response (200):
+{
+  "message": "Profile completed successfully",
+  "user": {
+    "id": "user_id",
+    "isProfileComplete": true
+  }
+}
+
+3. VERIFY PROVIDER (BACKWARD COMPATIBILITY)
+--------------------------------------------
+Endpoint: GET /verify-provider
+Auth: None
+Description: Redirects to /complete-registration (backward compatibility for old email links)
+
+Query Parameters:
+- token: Verification token
+- uid: User ID
+
+Response (302): Redirects to /complete-registration
+
+================================================================================
+MAPS ENDPOINTS
+================================================================================
+
+1. GEOCODE ADDRESS
+------------------
+Endpoint: GET /maps/geocode
+Auth: Optional
+Description: Convert address to coordinates
+
+Query Parameters:
+- address: Address string
+
+Response (200):
+{
+  "location": {
+    "type": "Point",
+    "coordinates": [28.0473, -26.2041],
+    "address": "123 Main St, Johannesburg"
+  }
+}
+
+2. REVERSE GEOCODE
+-------------------
+Endpoint: GET /maps/reverse-geocode
+Auth: Optional
+Description: Convert coordinates to address
+
+Query Parameters:
+- lat: Latitude
+- lng: Longitude
+
+Response (200):
+{
+  "address": "123 Main St, Johannesburg"
+}
+
+3. CALCULATE ROUTE
+-------------------
+Endpoint: GET /maps/route
+Auth: Optional
+Description: Calculate route between two points
+
+Query Parameters:
+- from: Starting coordinates (lat,lng)
+- to: Destination coordinates (lat,lng)
+
+Response (200):
+{
+  "distance": 5.2,
+  "duration": 12,
+  "route": [...]
+}
+
+4. GET MAP EMBED URL FOR BOOKING
+----------------------------------
+Endpoint: GET /maps/booking/:bookingId/embed
+Auth: Required
+Description: Get map embed URL for a booking
+
+Response (200):
+{
+  "embedUrl": "https://maps.google.com/embed?..."
+}
+
+5. GET BOOKING DIRECTIONS
+--------------------------
+Endpoint: GET /maps/booking/:bookingId/directions
+Auth: Required
+Description: Get directions for a booking
+
+Response (200): Directions object
+
+================================================================================
+WORKFLOWS ENDPOINTS
+================================================================================
+
+1. GET WORKFLOW
+---------------
+Endpoint: GET /workflows/:bookingId
+Auth: Required
+Description: Get workflow steps for a booking
+
+Response (200):
+{
+  "bookingId": "booking_id",
+  "steps": [
+    {
+      "index": 0,
+      "name": "Payment",
+      "status": "completed",
+      "completedAt": "2025-11-08T15:00:00Z"
+    },
+    {
+      "index": 1,
+      "name": "Provider Acceptance",
+      "status": "completed",
+      "completedAt": "2025-11-08T15:05:00Z"
+    }
+  ]
+}
+
+2. UPDATE WORKFLOW STEP
+-----------------------
+Endpoint: PUT /workflows/:bookingId/steps/:stepIndex
+Auth: Required
+Description: Update workflow step status
+
+Request Body:
+{
+  "status": "completed",
+  "notes": "Step completed"
+}
+
+Response (200):
+{
+  "message": "Workflow step updated",
+  "step": {
+    "index": 0,
+    "status": "completed"
+  }
+}
+
+================================================================================
+PRIVACY ENDPOINTS
+================================================================================
+
+1. EXPORT USER DATA
+-------------------
+Endpoint: GET /privacy/export-data
+Auth: Required
+Description: Export all user data (POPIA compliance)
+
+Response (200):
+{
+  "user": {...},
+  "bookings": [...],
+  "payments": [...],
+  "messages": [...]
+}
+
+2. DELETE ACCOUNT
+------------------
+Endpoint: DELETE /privacy/delete-account
+Auth: Required
+Description: Delete user account and all associated data
+
+Response (200):
+{
+  "message": "Account deleted successfully"
+}
+
+3. UPDATE CONSENT
+-----------------
+Endpoint: PUT /privacy/consent
+Auth: Required
+Description: Update privacy consent preferences
+
+Request Body:
+{
+  "marketingConsent": true,
+  "dataProcessingConsent": true
+}
+
+Response (200): Updated consent object
+
+4. GET PRIVACY STATUS
+---------------------
+Endpoint: GET /privacy/status
+Auth: Required
+Description: Get current privacy status and consent
+
+Response (200): Privacy status object
+
+================================================================================
+EMAIL VERIFICATION ENDPOINTS
+================================================================================
+
+1. SEND VERIFICATION EMAIL
+----------------------------
+Endpoint: POST /email-verification/send-verification
+Auth: Required
+Description: Send email verification link
+
+Response (200):
+{
+  "message": "Verification email sent successfully"
+}
+
+2. VERIFY EMAIL (GET)
+---------------------
+Endpoint: GET /email-verification/verify-email
+Auth: None
+Description: Verify email using token (direct link access)
+
+Query Parameters:
+- token: Verification token
+- email: Email address
+
+Response (200):
+{
+  "message": "Email verified successfully"
+}
+
+3. VERIFY EMAIL (POST)
+----------------------
+Endpoint: POST /email-verification/verify-email
+Auth: None
+Description: Verify email using token (form submission)
+
+Request Body:
+{
+  "token": "verification_token",
+  "email": "user@example.com"
+}
+
+Response (200):
+{
+  "message": "Email verified successfully"
+}
+
+4. CHECK VERIFICATION STATUS
+-----------------------------
+Endpoint: GET /email-verification/verification-status
+Auth: Required
+Description: Check if email is verified
+
+Response (200):
+{
+  "isEmailVerified": true
+}
+
+================================================================================
+PASSWORD RESET ENDPOINTS
+================================================================================
+
+1. REQUEST PASSWORD RESET
+-------------------------
+Endpoint: POST /password-reset/request
+Auth: None
+Description: Request password reset email
+
+Request Body:
+{
+  "email": "user@example.com"
+}
+
+Response (200):
+{
+  "message": "Password reset email sent successfully"
+}
+
+2. RESET PASSWORD
+-----------------
+Endpoint: POST /password-reset/reset
+Auth: None
+Description: Reset password using token
+
+Request Body:
+{
+  "token": "reset_token",
+  "email": "user@example.com",
+  "newPassword": "NewSecurePass123!"
+}
+
+Response (200):
+{
+  "message": "Password reset successfully"
+}
+
+3. VERIFY RESET TOKEN
+---------------------
+Endpoint: GET /password-reset/verify-token
+Auth: None
+Description: Verify if reset token is valid
+
+Query Parameters:
+- token: Reset token
+- email: Email address
+
+Response (200):
+{
+  "valid": true
+}
+
+================================================================================
+HEALTH CHECK ENDPOINTS
+================================================================================
+
+1. BASIC HEALTH CHECK
+---------------------
+Endpoint: GET /health
+Auth: None
+Description: Basic health check
+
+Response (200):
+{
+  "status": "OK",
+  "timestamp": "2026-01-26T15:00:00.000Z",
+  "uptime": 3600,
+  "memory": {...},
+  "database": "connected",
+  "postgresPool": "connected"
+}
+
+2. DETAILED HEALTH CHECK
+-------------------------
+Endpoint: GET /health/detailed
+Auth: None
+Description: Detailed health check with system information
+
+Response (200):
+{
+  "status": "OK",
+  "timestamp": "2026-01-26T15:00:00.000Z",
+  "uptime": 3600,
+  "memory": {...},
+  "cpu": {...},
+  "database": "connected",
+  "emailService": "healthy"
+}
+
+================================================================================
+IMPORTANT NOTES
+================================================================================
+
+CHAT SYSTEM
+-----------
+Chat Activation:
+- Customer-provider chat activates when:
+  1. Provider accepts booking request (provider token generated)
+  2. Customer confirms payment (customer token generated)
+  3. Both tokens exist → chatActive: true
+
+Chat Termination:
+- Chat terminates when job is completed
+- chatActive set to false
+- chatTerminatedAt timestamp set
+
+Chat Permissions:
+- Customers can chat with providers (booking chat only)
+- Providers can chat with customers (booking chat) and admins (direct chat, provider-initiated)
+- Admins can see all chats (oversight)
+- Customers cannot chat with admins directly (use complaint system)
+
+Phone Number Access:
+- Available for urgent communication (e.g., gate locked, provider arrived)
+- Permission-based access (only for active bookings with chat active)
+- Admin can always see phone numbers
+
+SERVICE CREATION
+----------------
+Provider Service Creation:
+- Required: title, description, price
+- Optional: duration, mediaUrl, status
+- No category field
+
+Admin Service Creation:
+- Can create services without providerId
+- Assign provider later using POST /admin/services/:id/assign
+- Unassign using POST /admin/services/:id/unassign
+
+Default Services:
+- System comes with default services (isSystemService: true)
+- Admins can assign these to providers
+
+CATEGORY FIELD REMOVED
+----------------------
+All category-related functionality has been removed:
+- No category field in services
+- No category-based filtering
+- Revenue stats now grouped by service (not category)
+- Search only matches title and description
+
+ADMIN AUTHENTICATION
+--------------------
+Admin users must use OTP authentication:
+
+1. Admin attempts login → POST /auth/login → Receives requiresOTP: true + OTP in response
+2. Admin can use verification link → GET /admin/verify?token=...&email=...&otp=... (confetti page)
+3. Admin requests OTP → POST /admin/otp/request with email (non-blocking)
+4. Admin receives 6-digit OTP via email (valid for 5 hours) + embedded in response
+5. Admin verifies OTP → POST /admin/otp/verify with email + OTP
+6. Admin receives JWT token (valid for 5 hours)
+
+Security Features:
+- OTP expires after 5 hours
+- OTP can only be used once
+- Admin tokens expire after 5 hours (shorter than regular users)
+- OTP is only available for @spana.co.za email addresses (or configured admin domains)
+- Email sending is non-blocking (API responds immediately)
+
+USER REGISTRATION FLOWS
+-----------------------
+Customer Registration:
+- Public registration via POST /auth/register with role: "customer"
+- Customer sets their own password during registration
+- No admin approval required
+
+Service Provider Registration:
+- Admin creates provider via POST /admin/providers/register (minimal info: name, email, phone)
+- Provider receives email with profile completion link
+- Provider completes profile via POST /complete-registration (sets password, uploads documents, etc.)
+- Provider profile must be 100% complete before creating services
+
+Admin Registration:
+- Only admins can create other admins via POST /admin/admins/register
+- New admin receives auto-generated password via email
+- Admin can change password via PUT /admin/profile
+- Public admin registration is disabled (403 Forbidden)
+
+================================================================================
+WEBSOCKET EVENTS (SOCKET.IO)
+================================================================================
+
+Connection:
+const socket = io('https://spana-server-5bhu.onrender.com', {
+  auth: {
+    token: 'your_jwt_token'
+  }
+});
+
+Chat Events:
+- join-booking - Join a booking chat room
+  socket.emit('join-booking', { 
+    bookingId: 'booking_id', 
+    chatToken: 'chat_token_here' 
+  });
+
+- booking-chat - Send message in booking chat
+  socket.emit('booking-chat', { 
+    bookingId: 'booking_id', 
+    message: 'Hello' 
+  });
+
+- chat-message - Send direct message
+  socket.emit('chat-message', { 
+    toUserId: 'user_id', 
+    message: 'Hello',
+    chatType: 'direct' // or 'admin'
+  });
+
+- booking-joined - Confirmation of joining booking chat
+- booking-chat - Receive message in booking chat
+- chat-message - Receive direct message
+
+Other Events:
+- new-booking-request - Provider receives new booking
+- booking-updated - Booking status changed
+- payment-received - Payment confirmed
+- service-started - Service has started
+- service-completed - Service completed
+- notification - New notification
+
+================================================================================
+ERROR RESPONSES
+================================================================================
+
+All endpoints return standard HTTP status codes:
+
+- 200 - Success
+- 201 - Created
+- 400 - Bad Request (validation errors, invalid data)
+- 401 - Unauthorized (missing or invalid token)
+- 403 - Forbidden (insufficient permissions)
+- 404 - Not Found
+- 500 - Internal Server Error
+
+Error Response Format:
+{
+  "message": "Error description",
+  "error": "Detailed error message (development only)"
+}
+
+================================================================================
+PRODUCTION URLS
+================================================================================
+
+- Backend: https://spana-server-5bhu.onrender.com
+- Email Service: https://email-microservice-pi.vercel.app
+
+All verification links and API calls use these production URLs.
+
+================================================================================
+TESTING
+================================================================================
+
+Comprehensive test scripts are available:
+
+- npm run test:routes - Test all routes
+- npm run test:admin - Test admin routes and OTP flow
+- npx ts-node scripts/testCompleteE2E.ts - Full end-to-end test
+- npx ts-node scripts/testHostedUrls.ts - Test hosted URLs
+
+================================================================================
+END OF DOCUMENTATION
+================================================================================
+
+Last Updated: January 26, 2026
+Version: 3.0

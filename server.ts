@@ -505,6 +505,7 @@ app.use('/admin', require('./routes/admin'));
 app.use('/password-reset', require('./routes/passwordReset'));
 app.use('/privacy', require('./routes/privacy'));
 app.use('/complaints', require('./routes/complaints'));
+app.use('/contact', require('./routes/contact'));
 app.use('/stats', require('./routes/stats'));
 app.use('/chat', chatRoutes);
 app.use('/provider', providerRoutes);

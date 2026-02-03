@@ -291,15 +291,15 @@ exports.completeRegistration = async (req: any, res: any) => {
                 <label>Skills (Add your service skills)</label>
                 <div id="skillsContainer" class="skills-input">
                   ${(provider.skills || []).map((skill: string) => `
-                    <span class="skill-tag">
+                    <span class="skill-tag" data-skill="${skill}">
                       ${skill}
-                      <button type="button" onclick="removeSkill('${skill}')">×</button>
+                      <button type="button" class="remove-skill-btn" aria-label="Remove skill">×</button>
                     </span>
                   `).join('')}
                 </div>
                 <div class="add-skill" style="margin-top: 10px;">
                   <input type="text" id="newSkill" placeholder="Add a skill and press Enter">
-                  <button type="button" onclick="addSkill()" style="background: #0066CC; color: white; border: none; padding: 12px 20px; border-radius: 5px; cursor: pointer;">Add</button>
+                  <button type="button" id="addSkillButton" style="background: #0066CC; color: white; border: none; padding: 12px 20px; border-radius: 5px; cursor: pointer;">Add</button>
                 </div>
               </div>
               <p style="color: #666; font-size: 14px; margin-top: 20px; padding: 15px; background: #f0f0f0; border-radius: 5px;">
@@ -311,119 +311,7 @@ exports.completeRegistration = async (req: any, res: any) => {
             </form>
           </div>
         </div>
-        <script>
-          // Get token and uid from URL params if not in hidden fields
-          const urlParams = new URLSearchParams(window.location.search);
-          const tokenFromUrl = urlParams.get('token');
-          const uidFromUrl = urlParams.get('uid');
-          
-          if (tokenFromUrl) {
-            document.getElementById('tokenInput').value = tokenFromUrl;
-          }
-          if (uidFromUrl) {
-            document.getElementById('uidInput').value = uidFromUrl;
-          }
-          
-          let skills = ${JSON.stringify(provider.skills || [])};
-          
-          function addSkill() {
-            const input = document.getElementById('newSkill');
-            const skill = input.value.trim();
-            if (skill && !skills.includes(skill)) {
-              skills.push(skill);
-              renderSkills();
-              input.value = '';
-            }
-          }
-          
-          function removeSkill(skill) {
-            skills = skills.filter(s => s !== skill);
-            renderSkills();
-          }
-          
-          function renderSkills() {
-            const container = document.getElementById('skillsContainer');
-            container.innerHTML = skills.map(skill => \`
-              <span class="skill-tag">
-                \${skill}
-                <button type="button" onclick="removeSkill('\${skill}')">×</button>
-              </span>
-            \`).join('');
-          }
-          
-          document.getElementById('newSkill').addEventListener('keypress', function(e) {
-            if (e.key === 'Enter') {
-              e.preventDefault();
-              addSkill();
-            }
-          });
-          
-          document.getElementById('profileForm').addEventListener('submit', async function(e) {
-            e.preventDefault();
-            const form = e.target;
-            const formData = new FormData(form);
-            
-            // Validate required fields
-            const firstName = formData.get('firstName')?.toString().trim();
-            const lastName = formData.get('lastName')?.toString().trim();
-            const phone = formData.get('phone')?.toString().trim();
-            
-            if (!firstName || !lastName || !phone) {
-              const messageEl = document.getElementById('message');
-              messageEl.classList.add('show', 'error');
-              messageEl.textContent = 'Please fill in all required fields (First Name, Last Name, Phone Number).';
-              return;
-            }
-            
-            const data = {
-              firstName: firstName,
-              lastName: lastName,
-              phone: phone,
-              experienceYears: parseInt(formData.get('experienceYears')?.toString() || '0'),
-              skills: skills,
-              token: formData.get('token')?.toString(),
-              uid: formData.get('uid')?.toString()
-            };
-            
-            const btn = form.querySelector('button[type="submit"]');
-            btn.disabled = true;
-            btn.textContent = 'Saving...';
-            
-            const messageEl = document.getElementById('message');
-            messageEl.classList.remove('show', 'success', 'error');
-            
-            try {
-              const response = await fetch('/complete-registration', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(data)
-              });
-              
-              const result = await response.json();
-              
-              if (response.ok) {
-                messageEl.classList.add('show', 'success');
-                messageEl.textContent = result.message || 'Profile completed successfully! You can now log into the SPANA app to upload verification documents.';
-                btn.textContent = 'Profile Completed ✓';
-                setTimeout(() => {
-                  window.location.href = '/complete-registration?success=true&token=' + encodeURIComponent(data.token) + '&uid=' + encodeURIComponent(data.uid);
-                }, 2000);
-              } else {
-                messageEl.classList.add('show', 'error');
-                messageEl.textContent = result.message || 'Failed to complete profile. Please try again.';
-                btn.disabled = false;
-                btn.textContent = 'Complete Profile';
-              }
-            } catch (error) {
-              console.error('Form submission error:', error);
-              messageEl.classList.add('show', 'error');
-              messageEl.textContent = 'An error occurred. Please check your connection and try again.';
-              btn.disabled = false;
-              btn.textContent = 'Complete Profile';
-            }
-          });
-          
-        </script>
+        <script src="/complete-registration.js?token=${encodeURIComponent(token)}&uid=${encodeURIComponent(uid)}"></script>
       </body>
       </html>
     `;
@@ -450,6 +338,225 @@ exports.completeRegistration = async (req: any, res: any) => {
       </body>
       </html>
     `);
+  }
+};
+
+// External script for complete registration (CSP-friendly, no inline JS)
+exports.completeRegistrationScript = async (req: any, res: any) => {
+  try {
+    const { token, uid } = req.query;
+
+    if (!token || !uid) {
+      res
+        .type('application/javascript')
+        .send('console.error("Missing token or uid for complete-registration script.");');
+      return;
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { id: String(uid) },
+      include: {
+        serviceProvider: true
+      }
+    });
+
+    if (!user || user.role !== 'service_provider' || !user.serviceProvider) {
+      res
+        .type('application/javascript')
+        .send('console.error("Provider not found for complete-registration script.");');
+      return;
+    }
+
+    const provider = user.serviceProvider;
+
+    if (!provider.verificationToken || provider.verificationToken !== String(token)) {
+      res
+        .type('application/javascript')
+        .send('console.error("Invalid token for complete-registration script.");');
+      return;
+    }
+
+    if (provider.verificationExpires && provider.verificationExpires < new Date()) {
+      res
+        .type('application/javascript')
+        .send('console.error("Token expired for complete-registration script.");');
+      return;
+    }
+
+    const initialSkillsJson = JSON.stringify(provider.skills || []);
+
+    const script = `
+(function() {
+  const urlParams = new URLSearchParams(window.location.search);
+  const tokenFromUrl = urlParams.get('token');
+  const uidFromUrl = urlParams.get('uid');
+
+  const tokenInput = document.getElementById('tokenInput');
+  const uidInput = document.getElementById('uidInput');
+
+  if (tokenFromUrl && tokenInput) {
+    tokenInput.value = tokenFromUrl;
+  }
+  if (uidFromUrl && uidInput) {
+    uidInput.value = uidFromUrl;
+  }
+
+  let skills = ${initialSkillsJson};
+  const skillsContainer = document.getElementById('skillsContainer');
+  const newSkillInput = document.getElementById('newSkill');
+  const addSkillButton = document.getElementById('addSkillButton');
+  const form = document.getElementById('profileForm');
+  const messageEl = document.getElementById('message');
+
+  function renderSkills() {
+    if (!skillsContainer) return;
+    skillsContainer.innerHTML = skills
+      .map(function(skill) {
+        return '<span class="skill-tag" data-skill="' + skill + '">' +
+                 skill +
+                 '<button type="button" class="remove-skill-btn" aria-label="Remove skill">×</button>' +
+               '</span>';
+      })
+      .join('');
+  }
+
+  function showMessage(type, text) {
+    if (!messageEl) return;
+    messageEl.classList.remove('show', 'success', 'error');
+    if (type === 'success') {
+      messageEl.classList.add('show', 'success');
+    } else if (type === 'error') {
+      messageEl.classList.add('show', 'error');
+    }
+    messageEl.textContent = text;
+  }
+
+  function addSkillFromInput() {
+    if (!newSkillInput) return;
+    var skill = newSkillInput.value.trim();
+    if (skill && skills.indexOf(skill) === -1) {
+      skills.push(skill);
+      renderSkills();
+      newSkillInput.value = '';
+    }
+  }
+
+  if (addSkillButton) {
+    addSkillButton.addEventListener('click', function() {
+      addSkillFromInput();
+    });
+  }
+
+  if (newSkillInput) {
+    newSkillInput.addEventListener('keypress', function(e) {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        addSkillFromInput();
+      }
+    });
+  }
+
+  if (skillsContainer) {
+    skillsContainer.addEventListener('click', function(e) {
+      var target = e.target;
+      if (target && target.classList && target.classList.contains('remove-skill-btn')) {
+        var tag = target.closest('.skill-tag');
+        if (!tag) return;
+        var skill = tag.getAttribute('data-skill');
+        if (!skill) return;
+        skills = skills.filter(function(s) { return s !== skill; });
+        renderSkills();
+      }
+    });
+  }
+
+  renderSkills();
+
+  if (form) {
+    form.addEventListener('submit', function(e) {
+      e.preventDefault();
+      var formData = new FormData(form);
+      var firstName = (formData.get('firstName') || '').toString().trim();
+      var lastName = (formData.get('lastName') || '').toString().trim();
+      var phone = (formData.get('phone') || '').toString().trim();
+
+      if (!firstName || !lastName || !phone) {
+        showMessage('error', 'Please fill in all required fields (First Name, Last Name, Phone Number).');
+        return;
+      }
+
+      var experienceYearsValue = (formData.get('experienceYears') || '0').toString();
+      var experienceYears = parseInt(experienceYearsValue || '0', 10) || 0;
+
+      var data = {
+        firstName: firstName,
+        lastName: lastName,
+        phone: phone,
+        experienceYears: experienceYears,
+        skills: skills,
+        token: (formData.get('token') || '').toString(),
+        uid: (formData.get('uid') || '').toString()
+      };
+
+      var btn = form.querySelector('button[type="submit"]');
+      if (btn) {
+        btn.disabled = true;
+        btn.textContent = 'Saving...';
+      }
+
+      showMessage('', '');
+
+      fetch('/complete-registration', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data)
+      })
+        .then(function(response) {
+          return response.json().then(function(result) {
+            return { ok: response.ok, result: result };
+          });
+        })
+        .then(function(payload) {
+          var ok = payload.ok;
+          var result = payload.result || {};
+          if (ok) {
+            showMessage('success', result.message || 'Profile completed successfully! You can now log into the SPANA app to upload verification documents.');
+            if (btn) {
+              btn.textContent = 'Profile Completed ✓';
+            }
+            setTimeout(function() {
+              window.location.href = '/complete-registration?success=true&token=' +
+                encodeURIComponent(data.token) +
+                '&uid=' +
+                encodeURIComponent(data.uid);
+            }, 2000);
+          } else {
+            showMessage('error', result.message || 'Failed to complete profile. Please try again.');
+            if (btn) {
+              btn.disabled = false;
+              btn.textContent = 'Complete Profile';
+            }
+          }
+        })
+        .catch(function(error) {
+          console.error('Form submission error:', error);
+          showMessage('error', 'An error occurred. Please check your connection and try again.');
+          if (btn) {
+            btn.disabled = false;
+            btn.textContent = 'Complete Profile';
+          }
+        });
+    });
+  }
+})();
+`;
+
+    res.type('application/javascript').send(script);
+  } catch (error) {
+    console.error('Complete registration script error:', error);
+    res
+      .type('application/javascript')
+      .send('console.error("Failed to load complete-registration script.");');
   }
 };
 
