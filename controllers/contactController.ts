@@ -15,7 +15,13 @@ exports.sendContactMessage = async (req: any, res: any) => {
       return res.status(400).json({ message: 'Name, email, and message are required' });
     }
 
-    const contactEmail = process.env.CONTACT_EMAIL || process.env.SUPPORT_EMAIL || process.env.DEFAULT_FROM_EMAIL || 'info@spana.co.za';
+    // Get contact emails from environment or use default list
+    // Supports comma-separated list or single email
+    const contactEmailsEnv = process.env.CONTACT_EMAIL || process.env.SUPPORT_EMAIL || process.env.DEFAULT_FROM_EMAIL;
+    const contactEmails = contactEmailsEnv 
+      ? contactEmailsEnv.split(',').map(email => email.trim()).filter(email => email)
+      : ['xoli@spana.co.za', 'nhlakanipho@spana.co.za', 'lungi@spana.co.za', 'no-reply@spana.co.za'];
+
     const emailSubject = subject && subject.trim()
       ? `[Spana Contact] ${subject.trim()}`
       : '[Spana Contact] New message from website';
@@ -61,13 +67,32 @@ exports.sendContactMessage = async (req: any, res: any) => {
       </p>
     `;
 
-    await sendEmailViaService({
-      to: contactEmail,
-      subject: emailSubject,
-      text,
-      html,
-      type: 'contact'
-    });
+    // Send email to all recipients
+    const emailPromises = contactEmails.map(contactEmail => 
+      sendEmailViaService({
+        to: contactEmail,
+        subject: emailSubject,
+        text,
+        html,
+        type: 'contact'
+      }).catch((error: any) => {
+        // Log error but don't fail the entire request if one email fails
+        console.error(`[Contact Form] Failed to send email to ${contactEmail}:`, error?.message || error);
+        return { error: true, email: contactEmail, message: error?.message };
+      })
+    );
+
+    // Wait for all emails to be sent (or fail)
+    const results = await Promise.allSettled(emailPromises);
+    
+    // Log results
+    const successful = results.filter(r => r.status === 'fulfilled' && !r.value?.error).length;
+    const failed = results.filter(r => r.status === 'rejected' || r.value?.error).length;
+    
+    console.log(`[Contact Form] Email sent to ${successful}/${contactEmails.length} recipients`);
+    if (failed > 0) {
+      console.warn(`[Contact Form] ${failed} email(s) failed to send`);
+    }
 
     return res.json({ message: 'Contact message sent successfully' });
   } catch (error: any) {
