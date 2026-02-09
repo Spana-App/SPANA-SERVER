@@ -1,22 +1,39 @@
 import prisma from '../lib/database';
 import { getBestAvailableProvider, getLocationMultiplier } from '../lib/providerMatching';
 import { generateBookingReferenceAsync } from '../lib/idGenerator';
+import { validateLocation, locationsAreEqual, getLocationFromRequest } from '../lib/locationUtils';
 // import { syncBookingToMongo } from '../lib/mongoSync';
 
 // Create a new booking REQUEST (Uber-style) - Automatic provider matching
+// 
+// Expected Payload Format:
+// {
+//   "serviceId": "service_id",                    // Required (or use serviceTitle + requiredSkills)
+//   "date": "2025-11-15T10:00:00Z",              // Required - ISO format, must be today
+//   "time": "10:00",                              // Required - time string
+//   "location": {                                 // Required - device location
+//     "type": "Point",
+//     "coordinates": [28.0473, -26.2041],        // [longitude, latitude]
+//     "address": "123 Main St, Johannesburg"
+//   },
+//   "notes": "Please arrive on time",             // Optional
+//   "estimatedDurationMinutes": 60,               // Optional - defaults to service duration
+//   "jobSize": "medium",                          // Optional - "small", "medium", "large", "custom" (default: "medium")
+//   "customPrice": null                           // Optional - required if jobSize is "custom"
+// }
+//
+// Alternative Payload (Automatic Provider Matching):
+// {
+//   "serviceTitle": "Plumbing Service",           // Required (or use serviceId)
+//   "requiredSkills": ["plumbing", "repair"],     // Required if using serviceTitle
+//   ... (same other fields)
+// }
 exports.createBooking = async (req: any, res: any) => {
   try {
     const { serviceTitle, serviceId, date, time, location, notes, estimatedDurationMinutes, jobSize, customPrice, requiredSkills } = req.body;
 
-    // Validate location is provided (required for tracking)
-    if (!location || !location.coordinates || location.coordinates.length !== 2) {
-      return res.status(400).json({ 
-        message: 'Location with coordinates is required. Please enable location services on your device.' 
-      });
-    }
-
-    // Get customer location
-    const customer = await prisma.customer.findUnique({
+    // Get customer profile
+    let customer = await prisma.customer.findUnique({
       where: { userId: req.user.id },
       include: { user: true }
     });
@@ -25,11 +42,42 @@ exports.createBooking = async (req: any, res: any) => {
       return res.status(404).json({ message: 'Customer profile not found' });
     }
 
-    // Ensure customer has location set
-    if (!customer.user.location) {
+    // Validate and normalize location from request (device location)
+    // ALWAYS require device location in request - dynamic location is mandatory
+    if (!location) {
       return res.status(400).json({ 
-        message: 'Customer location not set. Please update your location in profile settings.' 
+        message: 'Location with coordinates is required in the request. Please enable location services on your device and provide current location.' 
       });
+    }
+
+    // Validate the device location from request
+    const validation = validateLocation(location);
+    if (!validation.valid || !validation.normalized) {
+      return res.status(400).json({ 
+        message: validation.error || 'Location with valid coordinates is required. Please enable location services on your device and ensure GPS is working correctly.' 
+      });
+    }
+
+    const bookingLocation = validation.normalized;
+    
+    // Auto-update customer's profile location with device location from request
+    // This keeps the profile synchronized with the most recent device location
+    const profileLoc = customer.user.location;
+    if (!profileLoc || !locationsAreEqual(bookingLocation, profileLoc, 50)) {
+      // Update profile with current device location (always keep profile current)
+      await prisma.user.update({
+        where: { id: req.user.id },
+        data: { location: bookingLocation }
+      });
+      
+      // Refresh customer data
+      const updatedCustomer = await prisma.customer.findUnique({
+        where: { userId: req.user.id },
+        include: { user: true }
+      });
+      if (updatedCustomer) {
+        customer = updatedCustomer;
+      }
     }
 
     let service: any;
@@ -66,7 +114,7 @@ exports.createBooking = async (req: any, res: any) => {
             provider: service.provider,
             service: service,
             distance: 0,
-            locationMultiplier: getLocationMultiplier(location.address, location.coordinates),
+            locationMultiplier: getLocationMultiplier(bookingLocation.address, bookingLocation.coordinates),
             adjustedPrice: service.price
           };
         } else {
@@ -75,7 +123,7 @@ exports.createBooking = async (req: any, res: any) => {
             providerMatch = await getBestAvailableProvider(
               service.title,
               service.provider.skills || [],
-              location,
+              bookingLocation,
               service.price
             );
           } catch (error) {
@@ -90,7 +138,7 @@ exports.createBooking = async (req: any, res: any) => {
           providerMatch = await getBestAvailableProvider(
             service.title,
             [],
-            location,
+            bookingLocation,
             service.price
           );
         } catch (error) {
@@ -104,7 +152,7 @@ exports.createBooking = async (req: any, res: any) => {
       providerMatch = await getBestAvailableProvider(
         serviceTitle,
         skills,
-        location,
+        bookingLocation,
         1000 // Default base price, will be adjusted
       );
 
@@ -190,7 +238,7 @@ exports.createBooking = async (req: any, res: any) => {
         serviceId: service.id,
         date: bookingDateTime, // Use validated date/time
         time,
-        location,
+        location: bookingLocation, // Use validated device location
         notes,
         estimatedDurationMinutes: estimatedDurationMinutes || service.duration,
         jobSize: selectedJobSize,
@@ -750,10 +798,40 @@ function calculateDistance(lat1: number, lon1: number, lat2: number, lon2: numbe
 }
 
 // Live location updates with proximity detection
+// Always uses device location dynamically
 exports.updateLocation = async (req: any, res: any) => {
   try {
     const { role } = req.user;
-    const { coordinates } = req.body; // [lng, lat]
+    const { coordinates } = req.body; // [lng, lat] - device location
+    
+    // Validate coordinates from device
+    if (!coordinates || !Array.isArray(coordinates) || coordinates.length < 2) {
+      return res.status(400).json({ 
+        message: 'Valid coordinates are required. Please ensure location services are enabled on your device.' 
+      });
+    }
+    
+    // Normalize coordinates to ensure [lng, lat] format
+    const { normalizeCoordinates } = require('../lib/locationUtils');
+    let [lng, lat] = normalizeCoordinates(coordinates);
+    
+    // Validate coordinate ranges
+    if (lng < -180 || lng > 180 || lat < -90 || lat > 90) {
+      return res.status(400).json({ 
+        message: 'Invalid coordinates. Longitude must be -180 to 180, Latitude must be -90 to 90.' 
+      });
+    }
+    
+    // Check for invalid default coordinates (0,0)
+    if (lng === 0 && lat === 0) {
+      return res.status(400).json({ 
+        message: 'Invalid coordinates detected. Please ensure GPS is working correctly on your device.' 
+      });
+    }
+    
+    // Use normalized coordinates (always [lng, lat] format)
+    const normalizedCoords = [lng, lat];
+    
     let booking = await prisma.booking.findUnique({
       where: { id: req.params.id },
       include: {
@@ -770,16 +848,17 @@ exports.updateLocation = async (req: any, res: any) => {
     const updateData: any = {};
 
     // Only the customer or the service provider for this booking can update
+    // Always use device location (most current)
     if (role === 'customer') {
       if (booking.customer.userId !== req.user.id) return res.status(403).json({ message: 'Not authorized' });
-      updateData.customerLiveLocation = { type: 'Point', coordinates };
+      updateData.customerLiveLocation = { type: 'Point', coordinates: normalizedCoords };
     } else if (role === 'service_provider') {
       const service = await prisma.service.findUnique({
         where: { id: booking.serviceId },
         include: { provider: true }
       });
       if (!service || service.provider.userId !== req.user.id) return res.status(403).json({ message: 'Not authorized' });
-      updateData.providerLiveLocation = { type: 'Point', coordinates };
+      updateData.providerLiveLocation = { type: 'Point', coordinates: normalizedCoords };
     } else {
       return res.status(403).json({ message: 'Not authorized' });
     }

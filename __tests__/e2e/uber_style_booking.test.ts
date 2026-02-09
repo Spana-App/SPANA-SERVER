@@ -312,6 +312,57 @@ describe('E2E: Uber-Style Booking Flow', () => {
       expect(booking.calculatedPrice).toBeGreaterThan(0);
     });
 
+    test('Customer can create booking even without profile location (auto-updates profile)', async () => {
+      expect(serviceId).toBeDefined();
+      expect(customerToken).toBeDefined();
+      expect(customerId).toBeDefined();
+      
+      // First, remove location from customer profile to simulate the bug scenario
+      await prisma.user.update({
+        where: { id: customerId },
+        data: { location: null }
+      });
+      
+      // Verify location is null
+      const userBefore = await prisma.user.findUnique({
+        where: { id: customerId }
+      });
+      expect(userBefore?.location).toBeNull();
+      
+      // Now try to create a booking with location in request
+      const bookingLocation = {
+        type: 'Point',
+        coordinates: [28.0473, -26.2041],
+        address: 'Test Location, Johannesburg'
+      };
+      
+      const res = await request(app)
+        .post('/bookings')
+        .set('Authorization', `Bearer ${customerToken}`)
+        .send({
+          serviceId: serviceId,
+          date: new Date().toISOString(), // Today
+          time: '10:00',
+          location: bookingLocation,
+          notes: 'Test booking without profile location',
+          estimatedDurationMinutes: 60,
+          jobSize: 'medium'
+        });
+
+      // Should succeed (not return 400 error)
+      expect(res.status).toBe(201);
+      const booking = res.body.booking || res.body;
+      expect(booking).toBeDefined();
+      expect(booking.id).toBeDefined();
+      
+      // Verify profile location was auto-updated
+      const userAfter = await prisma.user.findUnique({
+        where: { id: customerId }
+      });
+      expect(userAfter?.location).toBeDefined();
+      expect(userAfter?.location).toMatchObject(bookingLocation);
+    });
+
     test('Provider can see pending booking request', async () => {
       expect(bookingId).toBeDefined();
       expect(providerToken).toBeDefined();
