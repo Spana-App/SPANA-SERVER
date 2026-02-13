@@ -737,91 +737,104 @@ exports.confirmPayment = async (req, res) => {
   try {
     const { paymentIntentId, bookingId, amount, paymentMethod } = req.body;
 
-    // Note: Stripe support removed, using PayFast only
-    // If you need Stripe, uncomment and configure STRIPE_SECRET_KEY
-    const stripeClient: any = null; // Stripe removed, use PayFast
+    // Stripe confirm (preferred): verify PaymentIntent succeeded and update booking/payment.
+    // This is important when webhooks aren't configured.
     if (stripeClient && paymentIntentId) {
       try {
-        const pi = await stripeClient.paymentIntents.capture(paymentIntentId);
-        // Create local payment record using Stripe transaction id
-        // Get customer ID from user
-        const customer = await prisma.customer.findUnique({
-          where: { userId: req.user.id }
-        });
-
-        if (!customer) {
-          return res.status(400).json({ message: 'Customer profile not found' });
+        const pi = await stripeClient.paymentIntents.retrieve(paymentIntentId);
+        if (!pi || pi.status !== 'succeeded') {
+          return res.status(400).json({ message: 'Payment not successful yet', status: pi?.status || 'unknown' });
         }
 
-        const payment = await prisma.payment.create({
-          data: {
-            customerId: customer.id,
-            bookingId,
-            amount: parseFloat(amount),
-            paymentMethod: paymentMethod || 'stripe',
-            status: 'completed',
-            transactionId: pi.id
-          }
-        });
-
-        // Update booking status to confirmed
-        await prisma.booking.update({
+        // Idempotent booking update
+        const existingBooking = await prisma.booking.findUnique({
           where: { id: bookingId },
-          data: { status: 'confirmed' }
+          include: { service: { include: { provider: { include: { user: true } } } } }
         });
+        if (!existingBooking) return res.status(404).json({ message: 'Booking not found' });
 
-        try {
-          await prisma.activity.create({
+        // Try to locate the payment created in /payments/intent
+        const metaPaymentId = (pi.metadata && pi.metadata.paymentId) || null;
+        let payment = metaPaymentId
+          ? await prisma.payment.findUnique({ where: { id: metaPaymentId } })
+          : await prisma.payment.findFirst({ where: { bookingId, transactionId: paymentIntentId } });
+
+        const amountPaid = ((pi.amount_received ?? pi.amount) || 0) / 100;
+        const totalAmount = amountPaid || parseFloat(amount);
+
+        // Ensure payment record exists and is marked completed
+        if (payment) {
+          if (payment.status !== 'completed') {
+            payment = await prisma.payment.update({
+              where: { id: payment.id },
+              data: { status: 'completed', escrowStatus: 'held', transactionId: paymentIntentId }
+            });
+          }
+        } else {
+          const customer = await prisma.customer.findUnique({ where: { userId: req.user.id } });
+          if (!customer) return res.status(400).json({ message: 'Customer profile not found' });
+          const referenceNumber = await generatePaymentReferenceAsync();
+          const commissionRate = 0.15;
+          const commissionAmount = totalAmount * commissionRate;
+          const providerPayout = totalAmount - commissionAmount;
+          payment = await prisma.payment.create({
             data: {
-              userId: req.user.id,
-              actionType: 'payment_confirm',
-              contentId: payment.id,
-              contentModel: 'Payment',
-              details: { bookingId }
+              referenceNumber,
+              customerId: customer.id,
+              bookingId,
+              amount: totalAmount,
+              currency: 'ZAR',
+              paymentMethod: paymentMethod || 'stripe',
+              status: 'completed',
+              transactionId: paymentIntentId,
+              escrowStatus: 'held',
+              commissionRate,
+              commissionAmount,
+              providerPayout
             }
           });
+        }
+
+        // Update booking paymentStatus so providers can accept
+        if (existingBooking.paymentStatus !== 'paid_to_escrow') {
+          await prisma.booking.update({
+            where: { id: bookingId },
+            data: {
+              paymentStatus: 'paid_to_escrow',
+              status: 'pending_acceptance',
+              escrowAmount: totalAmount
+            }
+          });
+        }
+
+        // Notify provider that a PAID booking is available
+        try {
+          const app = require('../server');
+          const io = app.get && app.get('io');
+          if (io && existingBooking.service?.provider?.user?.id) {
+            io.to(existingBooking.service.provider.user.id).emit('new-booking-request', {
+              bookingId: existingBooking.id,
+              service: existingBooking.service.title,
+              customer: `${req.user.firstName} ${req.user.lastName}`,
+              date: existingBooking.date,
+              time: existingBooking.time,
+              location: existingBooking.location,
+              amount: totalAmount,
+              paymentReceived: true
+            });
+          }
         } catch (_) {}
 
-        // Send receipts (fire-and-forget)
+        // Update workflow: Payment Received
         try {
-          const booking = await prisma.booking.findUnique({
-            where: { id: bookingId },
-            include: {
-              service: {
-                include: {
-                  provider: {
-                    include: {
-                      user: {
-                        select: { email: true }
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          });
-
-          const customer = await prisma.user.findUnique({
-            where: { id: req.user.id },
-            select: { email: true }
-          });
-
-          const payload = {
-            amount,
-            currency: req.body.currency || 'ZAR',
-            bookingId,
-            transactionId: paymentIntentId,
-            createdAt: payment.createdAt
-          };
-
-          if (customer?.email) sendReceiptEmail({ to: customer.email, toRole: 'customer', ...payload }).catch(() => {});
-          if (booking?.service?.provider?.user?.email) sendReceiptEmail({ to: booking.service.provider.user.email, toRole: 'provider', ...payload }).catch(() => {});
+          const workflowController = require('../controllers/serviceWorkflowController');
+          await workflowController.updateWorkflowStepByName(bookingId, 'Payment Received', 'completed', 'Payment received (Stripe confirm)');
         } catch (_) {}
 
         return res.json({ message: 'Payment confirmed', payment });
-      } catch (stripeErr) {
-        console.error('Stripe capture error', stripeErr);
-        return res.status(400).json({ message: 'Stripe capture failed', error: stripeErr && stripeErr.message });
+      } catch (stripeErr: any) {
+        console.error('Stripe confirm error', stripeErr);
+        return res.status(400).json({ message: 'Stripe payment verification failed', error: stripeErr?.message });
       }
     }
 
@@ -1073,6 +1086,131 @@ export {};
 // Stripe webhook handler (sandbox: use STRIPE_WEBHOOK_SECRET from Stripe CLI or Dashboard)
 exports.webhookHandler = async (req: any, res: any) => {
   try {
+    const processStripePaymentIntentSucceeded = async (pi: any) => {
+      const bookingId = (pi.metadata && pi.metadata.bookingId) || null;
+      const paymentIdFromMeta = (pi.metadata && pi.metadata.paymentId) || null;
+
+      const paymentInclude = {
+        booking: {
+          include: {
+            service: { include: { provider: { include: { user: true } } } },
+            customer: { include: { user: true } }
+          }
+        }
+      };
+
+      let payment = paymentIdFromMeta
+        ? await prisma.payment.findUnique({ where: { id: paymentIdFromMeta }, include: paymentInclude })
+        : await prisma.payment.findFirst({ where: { transactionId: pi.id }, include: paymentInclude });
+
+      if (!payment || !bookingId) {
+        console.error('Stripe webhook: payment or bookingId not found', { paymentIdFromMeta, bookingId });
+        return;
+      }
+
+      // Idempotent: skip if already completed
+      if (payment.status === 'completed') return;
+
+      const amount = pi.amount ? pi.amount / 100 : payment.amount;
+
+      await prisma.payment.update({
+        where: { id: payment.id },
+        data: { status: 'completed', escrowStatus: 'held', transactionId: pi.id }
+      });
+
+      const invoiceNumber = `INV-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${Math.random().toString(36).substr(2, 5).toUpperCase()}`;
+      const { generateChatToken } = require('../lib/chatTokens');
+      const customerChatToken = payment.booking?.customer?.userId
+        ? generateChatToken(bookingId, payment.booking.customer.userId, 'customer')
+        : null;
+
+      await prisma.booking.update({
+        where: { id: bookingId },
+        data: {
+          paymentStatus: 'paid_to_escrow',
+          status: 'pending_acceptance',
+          invoiceNumber,
+          invoiceSentAt: new Date(),
+          customerChatToken,
+          chatActive: false
+        }
+      });
+
+      let wallet = await prisma.spanaWallet.findFirst();
+      if (!wallet) wallet = await prisma.spanaWallet.create({ data: { totalHeld: 0, totalReleased: 0, totalCommission: 0 } });
+      await prisma.spanaWallet.update({
+        where: { id: wallet.id },
+        data: { totalHeld: { increment: amount } }
+      });
+      await prisma.walletTransaction.create({
+        data: {
+          walletId: wallet.id,
+          type: 'deposit',
+          amount,
+          bookingId,
+          paymentId: payment.id,
+          description: `Payment received for booking ${bookingId} (Stripe)`
+        }
+      });
+
+      try {
+        const workflowController = require('../controllers/serviceWorkflowController');
+        await workflowController.updateWorkflowStepByName(bookingId, 'Payment Received', 'completed', 'Payment received (Stripe)');
+      } catch (_) {}
+
+      try {
+        const { sendInvoiceEmail } = require('../config/mailer');
+        const booking = await prisma.booking.findUnique({
+          where: { id: bookingId },
+          include: { service: true, customer: { include: { user: true } } }
+        });
+        if (booking?.customer?.user?.email) {
+          await sendInvoiceEmail({
+            to: booking.customer.user.email,
+            name: `${booking.customer.user.firstName || ''} ${booking.customer.user.lastName || ''}`.trim() || 'Customer',
+            invoiceNumber,
+            bookingId,
+            serviceTitle: booking.service.title,
+            amount,
+            currency: 'ZAR',
+            jobSize: booking.jobSize,
+            basePrice: booking.basePrice,
+            multiplier: booking.jobSizeMultiplier,
+            calculatedPrice: booking.calculatedPrice,
+            tipAmount: payment.tipAmount || 0,
+            date: new Date(),
+            transactionId: pi.id
+          }).catch(() => {});
+        }
+      } catch (_) {}
+
+      try {
+        const booking = await prisma.booking.findUnique({
+          where: { id: bookingId },
+          include: { service: { include: { provider: { include: { user: true } } } }, customer: { include: { user: true } } }
+        });
+        if (booking?.customer?.user?.email) sendReceiptEmail({ to: booking.customer.user.email, toRole: 'customer', amount, currency: 'ZAR', bookingId, transactionId: pi.id, createdAt: new Date() }).catch(() => {});
+        if (booking?.service?.provider?.user?.email) sendReceiptEmail({ to: booking.service.provider.user.email, toRole: 'provider', amount, currency: 'ZAR', bookingId, transactionId: pi.id, createdAt: new Date() }).catch(() => {});
+      } catch (_) {}
+
+      const customerUserId = payment.booking?.customer?.userId;
+      if (customerUserId) {
+        await prisma.activity.create({
+          data: { userId: customerUserId, actionType: 'payment_confirm', contentId: payment.id, contentModel: 'Payment', details: { bookingId } }
+        }).catch(() => {});
+      }
+
+      try {
+        const app = require('../server');
+        const io = app.get && app.get('io');
+        if (io && payment.booking?.customer?.user?.id) {
+          io.to(payment.booking.customer.user.id).emit('payment-received', { bookingId });
+          if (payment.booking.service?.provider?.user?.id) io.to(payment.booking.service.provider.user.id).emit('payment-received', { bookingId });
+          io.to(`booking:${bookingId}`).emit('chatroom-active', { bookingId });
+        }
+      } catch (_) {}
+    };
+
     if (stripeClient && process.env.STRIPE_WEBHOOK_SECRET) {
       const sig = req.headers['stripe-signature'];
       let event;
@@ -1085,127 +1223,35 @@ exports.webhookHandler = async (req: any, res: any) => {
 
       if (event.type === 'payment_intent.succeeded') {
         const pi = event.data.object;
-        const bookingId = (pi.metadata && pi.metadata.bookingId) || null;
-        const paymentIdFromMeta = (pi.metadata && pi.metadata.paymentId) || null;
+        await processStripePaymentIntentSucceeded(pi);
+      }
+      return res.status(200).send('OK');
+    }
 
-        const paymentInclude = {
-          booking: {
-            include: {
-              service: { include: { provider: { include: { user: true } } } },
-              customer: { include: { user: true } }
+    // Stripe is configured but webhook secret is missing.
+    // We'll still reconcile `payment_intent.succeeded` by re-fetching the PaymentIntent from Stripe
+    // (metadata is trusted from Stripe). This ensures booking.paymentStatus updates after payment.
+    if (stripeClient && !process.env.STRIPE_WEBHOOK_SECRET) {
+      let event: any = req.body;
+      try {
+        if (Buffer.isBuffer(event)) event = JSON.parse(event.toString('utf8'));
+      } catch (_) {}
+
+      try {
+        if (event && event.type === 'payment_intent.succeeded') {
+          const piPayload = event.data && event.data.object ? event.data.object : event;
+          const piId = piPayload && piPayload.id;
+          if (piId) {
+            const pi = await stripeClient.paymentIntents.retrieve(piId);
+            if (pi && pi.status === 'succeeded') {
+              await processStripePaymentIntentSucceeded(pi);
             }
           }
-        };
-        let payment = paymentIdFromMeta
-          ? await prisma.payment.findUnique({ where: { id: paymentIdFromMeta }, include: paymentInclude })
-          : await prisma.payment.findFirst({ where: { transactionId: pi.id }, include: paymentInclude });
-
-        if (!payment || !bookingId) {
-          console.error('Stripe webhook: payment or bookingId not found', { paymentIdFromMeta, bookingId });
-          return res.status(200).send('OK');
         }
-
-        // Idempotent: skip if already completed
-        if (payment.status === 'completed') return res.status(200).send('OK');
-
-        const amount = pi.amount ? pi.amount / 100 : payment.amount;
-        await prisma.payment.update({
-          where: { id: payment.id },
-          data: { status: 'completed', escrowStatus: 'held', transactionId: pi.id }
-        });
-
-        const invoiceNumber = `INV-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${Math.random().toString(36).substr(2, 5).toUpperCase()}`;
-        const { generateChatToken } = require('../lib/chatTokens');
-        const customerChatToken = payment.booking?.customer?.userId
-          ? generateChatToken(bookingId, payment.booking.customer.userId, 'customer')
-          : null;
-
-        await prisma.booking.update({
-          where: { id: bookingId },
-          data: {
-            paymentStatus: 'paid_to_escrow',
-            status: 'pending_acceptance',
-            invoiceNumber,
-            invoiceSentAt: new Date(),
-            customerChatToken,
-            chatActive: false
-          }
-        });
-
-        let wallet = await prisma.spanaWallet.findFirst();
-        if (!wallet) wallet = await prisma.spanaWallet.create({ data: { totalHeld: 0, totalReleased: 0, totalCommission: 0 } });
-        await prisma.spanaWallet.update({
-          where: { id: wallet.id },
-          data: { totalHeld: { increment: amount } }
-        });
-        await prisma.walletTransaction.create({
-          data: {
-            walletId: wallet.id,
-            type: 'deposit',
-            amount,
-            bookingId,
-            paymentId: payment.id,
-            description: `Payment received for booking ${bookingId} (Stripe)`
-          }
-        });
-
-        try {
-          const workflowController = require('../controllers/serviceWorkflowController');
-          await workflowController.updateWorkflowStepByName(bookingId, 'Payment Received', 'completed', 'Payment received (Stripe)');
-        } catch (_) {}
-
-        try {
-          const { sendInvoiceEmail } = require('../config/mailer');
-          const booking = await prisma.booking.findUnique({
-            where: { id: bookingId },
-            include: { service: true, customer: { include: { user: true } } }
-          });
-          if (booking?.customer?.user?.email) {
-            await sendInvoiceEmail({
-              to: booking.customer.user.email,
-              name: `${booking.customer.user.firstName || ''} ${booking.customer.user.lastName || ''}`.trim() || 'Customer',
-              invoiceNumber,
-              bookingId,
-              serviceTitle: booking.service.title,
-              amount,
-              currency: 'ZAR',
-              jobSize: booking.jobSize,
-              basePrice: booking.basePrice,
-              multiplier: booking.jobSizeMultiplier,
-              calculatedPrice: booking.calculatedPrice,
-              tipAmount: payment.tipAmount || 0,
-              date: new Date(),
-              transactionId: pi.id
-            }).catch(() => {});
-          }
-        } catch (_) {}
-
-        try {
-          const booking = await prisma.booking.findUnique({
-            where: { id: bookingId },
-            include: { service: { include: { provider: { include: { user: true } } } }, customer: { include: { user: true } } }
-          });
-          if (booking?.customer?.user?.email) sendReceiptEmail({ to: booking.customer.user.email, toRole: 'customer', amount, currency: 'ZAR', bookingId, transactionId: pi.id, createdAt: new Date() }).catch(() => {});
-          if (booking?.service?.provider?.user?.email) sendReceiptEmail({ to: booking.service.provider.user.email, toRole: 'provider', amount, currency: 'ZAR', bookingId, transactionId: pi.id, createdAt: new Date() }).catch(() => {});
-        } catch (_) {}
-
-        const customerUserId = payment.booking?.customer?.userId;
-        if (customerUserId) {
-          await prisma.activity.create({
-            data: { userId: customerUserId, actionType: 'payment_confirm', contentId: payment.id, contentModel: 'Payment', details: { bookingId } }
-          }).catch(() => {});
-        }
-
-        try {
-          const app = require('../server');
-          const io = app.get && app.get('io');
-          if (io && payment.booking?.customer?.user?.id) {
-            io.to(payment.booking.customer.user.id).emit('payment-received', { bookingId });
-            if (payment.booking.service?.provider?.user?.id) io.to(payment.booking.service.provider.user.id).emit('payment-received', { bookingId });
-            io.to(`booking:${bookingId}`).emit('chatroom-active', { bookingId });
-          }
-        } catch (_) {}
+      } catch (reconErr) {
+        console.error('Webhook reconcile (no secret) error', reconErr);
       }
+
       return res.status(200).send('OK');
     }
 
