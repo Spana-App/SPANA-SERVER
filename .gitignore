@@ -13,6 +13,9 @@ yarn.lock
 
 # Build outputs
 dist/
+
+# User uploads (generated at runtime)
+uploads/
 build/
 *.log
 *.log.*

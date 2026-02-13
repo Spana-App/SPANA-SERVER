@@ -32,15 +32,20 @@ describe('E2E: Uber-Style Booking Flow', () => {
 
   describe('1. User Registration & Authentication', () => {
     test('Register customer', async () => {
-      // Try to delete existing user first
-      try {
-        const existingUser = await prisma.user.findUnique({
-          where: { email: 'xolinxiweni@gmail.com' }
-        });
-        if (existingUser) {
-          await prisma.user.delete({ where: { id: existingUser.id } });
+      const existingUser = await prisma.user.findUnique({
+        where: { email: 'xolinxiweni@gmail.com' }
+      });
+      if (existingUser) {
+        customerId = existingUser.id;
+        // Skip registration, get token via login
+        const loginRes = await request(app)
+          .post('/auth/login')
+          .send({ email: 'xolinxiweni@gmail.com', password: 'Test123!@#' });
+        if (loginRes.status === 200) {
+          customerToken = loginRes.body.token;
+          return;
         }
-      } catch (_) {}
+      }
 
       const res = await request(app)
         .post('/auth/register')
@@ -71,15 +76,21 @@ describe('E2E: Uber-Style Booking Flow', () => {
     });
 
     test('Register service provider', async () => {
-      // Try to delete existing user first
-      try {
-        const existingUser = await prisma.user.findUnique({
-          where: { email: 'eksnxiweni@gmail.com' }
-        });
-        if (existingUser) {
-          await prisma.user.delete({ where: { id: existingUser.id } });
+      const existingUser = await prisma.user.findUnique({
+        where: { email: 'eksnxiweni@gmail.com' },
+        include: { serviceProvider: true }
+      });
+      if (existingUser?.serviceProvider) {
+        providerId = existingUser.serviceProvider.id;
+        // Skip registration, get token via login
+        const loginRes = await request(app)
+          .post('/auth/login')
+          .send({ email: 'eksnxiweni@gmail.com', password: 'Test123!@#' });
+        if (loginRes.status === 200) {
+          providerToken = loginRes.body.token;
+          return;
         }
-      } catch (_) {}
+      }
 
       const res = await request(app)
         .post('/auth/register')

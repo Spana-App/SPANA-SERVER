@@ -280,15 +280,11 @@ async function testCompleteFlow() {
     console.log(`   ✅ Credentials email sent`);
     console.log(`   ✅ Provider can login\n`);
 
-    // Cleanup
-    console.log('🧹 Cleaning up test data...');
-    await prisma.user.delete({ where: { id: userId } });
-    await prisma.serviceProviderApplication.delete({ where: { id: applicationId } });
-    // Clean up test document file
+    // Cleanup removed to prevent accidental data loss
+    console.log('🧹 Test complete. (DB cleanup skipped - delete test data manually if needed)');
     if (fs.existsSync(testDocPath)) {
       fs.unlinkSync(testDocPath);
     }
-    console.log('   ✅ Test data cleaned up\n');
 
   } catch (error: any) {
     console.error('\n❌ Test failed:', error.message);

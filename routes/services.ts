@@ -13,6 +13,9 @@ router.get('/', serviceController.getAllServices);
 // MUST come before /:id to avoid matching "discover" as an ID
 router.get('/discover', optionalAuth, serviceController.discoverServices);
 
+// Get service categories (public - for website, shows only categories with services in DB)
+router.get('/categories', serviceController.getCategories);
+
 // Get service by ID (must come LAST - after all specific routes)
 router.get('/:id', serviceController.getServiceById);
 

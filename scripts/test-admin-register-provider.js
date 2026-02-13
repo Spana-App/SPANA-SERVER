@@ -47,35 +47,20 @@ async function testAdminRegisterProvider() {
       return;
     }
 
-    // Step 2: Delete existing user if exists (for clean test)
+    // Step 2: Check if test user already exists (no deletion - use different email if exists)
     console.log('3️⃣ Checking if test user already exists...');
     try {
-      // Try to find user first
       const findUserResponse = await axios.get(
         `${baseUrl}/users?email=${encodeURIComponent(testEmail)}`,
-        {
-          headers: { Authorization: `Bearer ${adminToken}` }
-        }
+        { headers: { Authorization: `Bearer ${adminToken}` } }
       );
-      
       if (findUserResponse.data && findUserResponse.data.length > 0) {
-        const userId = findUserResponse.data[0].id;
-        console.log(`   Found existing user: ${userId}`);
-        console.log('   Deleting existing user...');
-        
-        await axios.delete(`${baseUrl}/users/${userId}`, {
-          headers: { Authorization: `Bearer ${adminToken}` }
-        });
-        console.log('   ✅ Deleted existing user\n');
-      } else {
-        console.log('   ✅ No existing user found\n');
+        console.log('   ⚠️  User already exists. Use a different email or skip this test.\n');
+        return;
       }
+      console.log('   ✅ No existing user found\n');
     } catch (e) {
-      if (e.response && e.response.status === 404) {
-        console.log('   ✅ No existing user found\n');
-      } else {
-        console.log('   ⚠️  Could not check/delete existing user (continuing anyway)\n');
-      }
+      console.log('   ⚠️  Could not check (continuing anyway)\n');
     }
 
     // Step 3: Register service provider via admin endpoint

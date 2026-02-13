@@ -132,6 +132,7 @@ model Service {
   price           Float
   duration        Int? // in minutes (optional)
   mediaUrl        String?
+  category        String? // slug for grouping: plumbing-electrical, cleaning, gardening, home-repairs, security-access, appliance-help
   status          String    @default("draft") // 'draft', 'pending_approval', 'active', 'archived'
   adminApproved   Boolean   @default(false) // Admin must approve before clients can see
   approvedBy      String? // Admin user ID who approved

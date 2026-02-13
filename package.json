@@ -16,7 +16,6 @@
     "get:otp": "npx ts-node scripts/getAdminOTP.ts",
     "setup:env": "node scripts/setupEnv.js",
     "test:smtp": "npx ts-node scripts/testSmtp.ts",
-    "cleanup:users": "node scripts/cleanupUsers.js",
     "migrate:setup": "ts-node scripts/migrateToPostgres.ts setup",
     "migrate:sync": "ts-node scripts/migrateToPostgres.ts sync",
     "db:push": "npx prisma db push",
@@ -24,7 +23,8 @@
     "db:generate": "npx prisma generate",
     "postinstall": "npx prisma generate",
     "seed:default-services": "npx ts-node scripts/seedDefaultServices.ts",
-    "seed:all": "npx ts-node scripts/seedComprehensiveData.ts"
+    "seed:all": "npx ts-node scripts/seedComprehensiveData.ts",
+    "verify:db": "npx ts-node scripts/verifyDatabaseSync.ts"
   },
   "dependencies": {
     "@prisma/client": "^6.19.0",

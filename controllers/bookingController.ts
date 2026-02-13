@@ -126,6 +126,10 @@ exports.createBooking = async (req: any, res: any) => {
               bookingLocation,
               service.price
             );
+            // Use matched provider's service so booking has the correct provider
+            if (providerMatch) {
+              service = providerMatch.service;
+            }
           } catch (error) {
             console.error('Error finding alternative provider:', error);
             // If matching fails, queue the request
@@ -141,6 +145,10 @@ exports.createBooking = async (req: any, res: any) => {
             bookingLocation,
             service.price
           );
+          // Use matched provider's service so booking has a provider (avoids null in payment flow)
+          if (providerMatch) {
+            service = providerMatch.service;
+          }
         } catch (error) {
           console.error('Error finding provider for service:', error);
           providerMatch = null;
@@ -361,7 +369,7 @@ exports.acceptBookingRequest = async (req: any, res: any) => {
       }
     });
 
-    if (!service || service.provider.userId !== req.user.id) {
+    if (!service || !service.provider || service.provider.userId !== req.user.id) {
       return res.status(403).json({ message: 'Not authorized' });
     }
 

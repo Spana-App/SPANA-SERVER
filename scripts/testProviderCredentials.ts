@@ -19,22 +19,16 @@ async function testProviderCredentialsFlow() {
   console.log('='.repeat(60));
 
   try {
-    // Step 1: Clean up any existing test user
-    console.log('\n📋 Step 1: Cleaning up existing test user...');
+    // Step 1: Check if test user exists - skip to prevent accidental deletion
+    console.log('\n📋 Step 1: Checking for existing test user...');
     const existing = await prisma.user.findUnique({
-      where: { email: TEST_EMAIL.toLowerCase() },
-      include: { serviceProvider: true }
+      where: { email: TEST_EMAIL.toLowerCase() }
     });
-
     if (existing) {
-      if (existing.serviceProvider) {
-        await prisma.serviceProvider.deleteMany({ where: { userId: existing.id } });
-      }
-      await prisma.user.delete({ where: { id: existing.id } });
-      console.log('   ✅ Cleaned up existing user\n');
-    } else {
-      console.log('   ✅ No existing user found\n');
+      console.log('   ⚠️  Test user already exists. Use a different email or skip this test.\n');
+      return;
     }
+    console.log('   ✅ No existing user found\n');
 
     // Step 2: Admin authentication
     console.log('📋 Step 2: Admin authentication...');

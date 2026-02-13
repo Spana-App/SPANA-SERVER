@@ -4,6 +4,7 @@ import prisma from '../lib/database';
 exports.getAllServices = async (req, res) => {
   try {
     const q = (req.query.q || '').trim();
+    const category = (req.query.category || '').trim();
 
     const where: any = {};
 
@@ -13,6 +14,11 @@ exports.getAllServices = async (req, res) => {
         { title: { contains: q, mode: 'insensitive' } },
         { description: { contains: q, mode: 'insensitive' } }
       ];
+    }
+
+    // Filter by category if provided
+    if (category) {
+      where.category = category;
     }
 
     // Filter services based on user role
@@ -375,6 +381,96 @@ exports.discoverServices = async (req, res) => {
   }
 };
 
+// Category metadata for website display (slug -> display info)
+const CATEGORY_CONFIG: Record<string, { title: string; description: string; features: string[] }> = {
+  'plumbing-electrical': {
+    title: 'Plumbing & Electrical',
+    description: 'Burst geysers, leaking taps, tripping plugs or no lights? Use Spana to find people who can sort out common plumbing and electrical issues around your home.',
+    features: ['Geysers & leaks', 'Blocked drains', 'Sockets & switches', 'General fault finding'],
+  },
+  'cleaning': {
+    title: 'Cleaning Services',
+    description: 'When the place needs a proper clean, Spana helps you find cleaners for once‑off deep cleans or regular weekly help.',
+    features: ['Once‑off deep cleans', 'Regular home cleaning', 'Move‑in / move‑out', 'Office & common areas'],
+  },
+  'gardening': {
+    title: 'Landscaping & Gardening',
+    description: 'Keep the outside looking as good as the inside. Find people to cut grass, trim trees and help with small landscaping jobs.',
+    features: ['Grass cutting', 'Tree trimming', 'Garden clean‑ups', 'Small landscaping projects'],
+  },
+  'home-repairs': {
+    title: 'Home Repairs & Maintenance',
+    description: 'For all the small fixes that pile up – doors that don\'t close, cupboards that need work, paint that needs touching up – Spana connects you with handypeople who can help.',
+    features: ['General handyman work', 'Painting & patching', 'Doors, cupboards & fittings', 'Small renovation touch‑ups'],
+  },
+  'security-access': {
+    title: 'Security & Access',
+    description: 'From new locks and remotes to basic security checks, Spana helps you find people who can make it easier to feel safe at home.',
+    features: ['Lock changes', 'Gate & garage remotes', 'Basic security checks', 'Minor access control issues'],
+  },
+  'appliance-help': {
+    title: 'Appliance Help',
+    description: 'When everyday appliances stop working properly, Spana connects you with people who can assess and fix common issues.',
+    features: ['Washing machines', 'Fridges & freezers', 'Stoves & ovens', 'Small household appliances'],
+  },
+};
+
+// Get service categories with services (public - for website)
+// GET /services/categories - returns only categories that have services in DB
+exports.getCategories = async (req, res) => {
+  try {
+    const services = await prisma.service.findMany({
+      where: {
+        adminApproved: true,
+        status: 'active',
+        category: { not: null },
+      },
+      select: {
+        id: true,
+        title: true,
+        description: true,
+        price: true,
+        duration: true,
+        mediaUrl: true,
+        category: true,
+      },
+    });
+
+    // Group by category
+    const byCategory: Record<string, any[]> = {};
+    for (const s of services) {
+      const cat = (s as any).category || 'other';
+      if (!byCategory[cat]) byCategory[cat] = [];
+      byCategory[cat].push(s);
+    }
+
+    // Build response: only categories that exist in DB, with config metadata
+    const categories = Object.entries(byCategory)
+      .filter(([slug]) => slug !== 'other')
+      .map(([slug, items]) => {
+        const config = CATEGORY_CONFIG[slug] || {
+          title: slug.replace(/-/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase()),
+          description: `${items.length} service(s) available.`,
+          features: [],
+        };
+        return {
+          slug,
+          title: config.title,
+          description: config.description,
+          features: config.features,
+          services: items,
+          count: items.length,
+        };
+      })
+      .sort((a, b) => b.count - a.count); // Most services first
+
+    res.json({ categories });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
 export {};
 
 // Get service by ID
@@ -425,7 +521,7 @@ exports.getServiceById = async (req, res) => {
 // Create a new service
 exports.createService = async (req, res) => {
   try {
-    const { title, description, price, mediaUrl, status } = req.body;
+    const { title, description, price, mediaUrl, status, category } = req.body;
 
     // Validate required fields
     if (!title || !description || !price) {
@@ -449,7 +545,8 @@ exports.createService = async (req, res) => {
         duration: null, // Optional - can be set later
         providerId: serviceProvider.id,
         mediaUrl: mediaUrl || null,
-        status: status || 'draft'
+        status: status || 'draft',
+        category: category || null
       },
       include: {
         provider: {
@@ -477,7 +574,7 @@ exports.createService = async (req, res) => {
 // Update a service
 exports.updateService = async (req, res) => {
   try {
-    const { title, description, price, duration, mediaUrl, status } = req.body;
+    const { title, description, price, duration, mediaUrl, status, category } = req.body;
 
     // First, get the existing service to check authorization
     const existingService = await prisma.service.findUnique({
@@ -509,7 +606,8 @@ exports.updateService = async (req, res) => {
         ...(price && { price: parseFloat(price) }),
         ...(duration && { duration: parseInt(duration) }),
         ...(mediaUrl !== undefined && { mediaUrl }),
-        ...(status && { status })
+        ...(status && { status }),
+        ...(category !== undefined && { category: category || null })
       },
       include: {
         provider: {

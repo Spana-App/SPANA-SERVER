@@ -20,16 +20,8 @@ async function testAdminProviderRegistration() {
     const adminToken = loginResponse.data.token;
     console.log('✅ Admin logged in successfully\n');
 
-    // Delete existing user if exists
     const testEmail = 'testprovider@example.com';
-    try {
-      const deleteResponse = await axios.delete(`http://localhost:5003/users/${testEmail}`, {
-        headers: { Authorization: `Bearer ${adminToken}` }
-      });
-      console.log('🗑️  Deleted existing test user\n');
-    } catch (e) {
-      // User doesn't exist, that's fine
-    }
+    // Note: Deletion removed. Use a fresh email if user already exists.
 
     // Register service provider via admin endpoint
     console.log('2. Registering service provider via admin endpoint...');

@@ -462,9 +462,6 @@ Caching
 
 Data hygiene and role separation
 - Role-based update sanitization: PUT /users/:id only applies fields valid for the user role
-- Cleanup script to fix historical data pollution:
-  - Run: npm run cleanup:users
-  - Removes provider-only fields from customers and customer-only fields from providers/admins
 
 Users
 

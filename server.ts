@@ -538,12 +538,23 @@ app.get('/health', async (req: any, res: any) => {
     poolStatus = 'disconnected';
   }
 
+  // Safe DB identifier for verifying local/production use same DB (no credentials)
+  let dbIdentifier = 'unknown';
+  try {
+    const url = process.env.DATABASE_URL || '';
+    if (url) {
+      const u = new URL(url.replace(/^postgresql:\/\//, 'https://'));
+      dbIdentifier = `${u.hostname}:${u.pathname.slice(1) || 'postgres'}`;
+    }
+  } catch (_) {}
+
   const healthCheck = {
     status: 'OK',
     timestamp: new Date().toISOString(),
     uptime: process.uptime(),
     memory: process.memoryUsage(),
     database: dbStatus,
+    databaseHost: dbIdentifier,
     postgresPool: poolStatus,
     poolStats: {
       totalCount: pool.totalCount,
@@ -567,6 +578,15 @@ app.get('/health/detailed', async (req: any, res: any) => {
     dbStatus = 'disconnected';
   }
 
+  let dbIdentifier = 'unknown';
+  try {
+    const url = process.env.DATABASE_URL || '';
+    if (url) {
+      const u = new URL(url.replace(/^postgresql:\/\//, 'https://'));
+      dbIdentifier = `${u.hostname}:${u.pathname.slice(1) || 'postgres'}`;
+    }
+  } catch (_) {}
+
   const healthCheck: any = {
     status: 'OK',
     timestamp: new Date().toISOString(),
@@ -578,6 +598,7 @@ app.get('/health/detailed', async (req: any, res: any) => {
     arch: os.arch(),
     hostname: os.hostname(),
     database: dbStatus,
+    databaseHost: dbIdentifier,
     redis: USE_REDIS ? (redisClient && (redisClient as any).connected ? 'connected' : 'disconnected') : 'disabled',
     environment: process.env.NODE_ENV,
     version: process.env.APP_VERSION || 'unknown'

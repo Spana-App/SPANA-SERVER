@@ -9,13 +9,11 @@ async function testLazyTokenExpiration() {
     console.log('🧪 Testing Lazy Token Expiration Logic\n');
     console.log('='.repeat(60));
 
-    // Clean up
-    console.log('\n1️⃣ Cleaning up test user...');
+    // Check if test user exists - skip to prevent accidental deletion
     const existing = await prisma.user.findUnique({ where: { email: testEmail } });
     if (existing) {
-      await prisma.serviceProvider.deleteMany({ where: { userId: existing.id } });
-      await prisma.user.delete({ where: { id: existing.id } });
-      console.log('✅ Cleaned up');
+      console.log('⚠️  Test user already exists. Use a different email or skip this test.\n');
+      return;
     }
 
     // Step 1: Register provider via self-registration

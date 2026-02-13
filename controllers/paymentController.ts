@@ -187,10 +187,12 @@ exports.createPaymentIntent = async (req, res) => {
               chatToken: customerChatToken,
               chatActive: true
             });
-            io.to(updatedBooking.service.provider.user.id).emit('chat-activated', {
-              bookingId,
-              chatActive: true
-            });
+            if (updatedBooking.service?.provider?.user?.id) {
+              io.to(updatedBooking.service.provider.user.id).emit('chat-activated', {
+                bookingId,
+                chatActive: true
+              });
+            }
             io.to(`booking:${bookingId}`).emit('chatroom-ready', { bookingId, chatActive: true });
           }
         } catch (_) {}
@@ -259,7 +261,9 @@ exports.createPaymentIntent = async (req, res) => {
         const io = app.get && app.get('io');
         if (io) {
           io.to(booking.customer.user.id).emit('payment-received', { bookingId });
-          io.to(booking.service.provider.user.id).emit('payment-received', { bookingId });
+          if (booking.service?.provider?.user?.id) {
+            io.to(booking.service.provider.user.id).emit('payment-received', { bookingId });
+          }
           io.to(`booking:${bookingId}`).emit('chatroom-active', { bookingId });
         }
       } catch (_) {}
@@ -437,7 +441,7 @@ exports.payfastWebhook = async (req, res) => {
               chatToken: customerChatToken,
               chatActive: true
             });
-            if (updatedBooking.service.provider) {
+            if (updatedBooking.service?.provider?.user?.id) {
               io.to(updatedBooking.service.provider.user.id).emit('chat-activated', {
                 bookingId,
                 chatActive: true
@@ -499,7 +503,9 @@ exports.payfastWebhook = async (req, res) => {
 
           if (booking) {
             io.to(booking.customer.user.id).emit('payment-received', { bookingId });
-            io.to(booking.service.provider.user.id).emit('payment-received', { bookingId });
+            if (booking.service?.provider?.user?.id) {
+              io.to(booking.service.provider.user.id).emit('payment-received', { bookingId });
+            }
             // Chatroom is now active
             io.to(`booking:${bookingId}`).emit('chatroom-active', { bookingId });
           }
@@ -652,7 +658,7 @@ exports.releaseFunds = async (req, res) => {
     });
 
     // Update provider wallet
-    if (booking.service.provider.user.id) {
+    if (booking.service?.provider?.user?.id) {
       await prisma.user.update({
         where: { id: booking.service.provider.user.id },
         data: {
@@ -893,7 +899,7 @@ exports.confirmPayment = async (req, res) => {
     try {
       const app = require('../server');
       const io = app.get && app.get('io');
-      if (io && booking.service.provider.user.id) {
+      if (io && booking.service?.provider?.user?.id) {
         io.to(booking.service.provider.user.id).emit('new-booking-request', {
           bookingId: booking.id,
           service: booking.service.title,

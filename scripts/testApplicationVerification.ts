@@ -182,11 +182,8 @@ async function testApplicationVerificationFlow() {
 
     console.log('\n✅ All final verification flags are correct!\n');
 
-    // Cleanup
-    console.log('🧹 Cleaning up test data...');
-    await prisma.user.delete({ where: { id: user.id } });
-    await prisma.serviceProviderApplication.delete({ where: { id: application.id } });
-    console.log('✅ Test data cleaned up\n');
+    // Cleanup removed to prevent accidental data loss
+    console.log('🧹 Test complete. (DB cleanup skipped - delete test data manually if needed)\n');
 
     console.log('🎉 All tests passed! Application verification flow is working correctly.\n');
 

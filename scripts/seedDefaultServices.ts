@@ -21,9 +21,20 @@ function log(step: string, message: string, color: string = colors.reset) {
   console.log(`${color}${step}${colors.reset} ${message}`);
 }
 
+// Category slugs (must match frontend/API)
+const CAT = {
+  PLUMBING_ELECTRICAL: 'plumbing-electrical',
+  CLEANING: 'cleaning',
+  GARDENING: 'gardening',
+  HOME_REPAIRS: 'home-repairs',
+  SECURITY_ACCESS: 'security-access',
+  APPLIANCE_HELP: 'appliance-help',
+};
+
 // Default services that come with the system
 const defaultServices = [
   {
+    category: CAT.PLUMBING_ELECTRICAL,
     title: 'Emergency Plumbing',
     description: '24/7 emergency plumbing services for leaks, clogs, and urgent repairs. Fast response time guaranteed.',
     price: 450,
@@ -32,6 +43,7 @@ const defaultServices = [
     mediaUrl: 'https://source.unsplash.com/featured/?plumber,emergency,leak,repair'
   },
   {
+    category: CAT.PLUMBING_ELECTRICAL,
     title: 'Pipe Repair',
     description: 'Professional pipe repair and replacement services. Fix leaks, burst pipes, and damaged plumbing.',
     price: 350,
@@ -40,6 +52,7 @@ const defaultServices = [
     mediaUrl: 'https://source.unsplash.com/featured/?plumbing,pipes,repair'
   },
   {
+    category: CAT.PLUMBING_ELECTRICAL,
     title: 'Drain Cleaning',
     description: 'Expert drain cleaning and unclogging services. Clear blocked drains and prevent future issues.',
     price: 280,
@@ -48,6 +61,7 @@ const defaultServices = [
     mediaUrl: 'https://source.unsplash.com/featured/?plumber,drain,cleaning,clog'
   },
   {
+    category: CAT.PLUMBING_ELECTRICAL,
     title: 'Electrical Repair',
     description: 'Professional electrical repair services. Fix faulty wiring, outlets, switches, and electrical issues.',
     price: 400,
@@ -56,6 +70,7 @@ const defaultServices = [
     mediaUrl: 'https://source.unsplash.com/featured/?electrician,electrical,repair'
   },
   {
+    category: CAT.PLUMBING_ELECTRICAL,
     title: 'Wiring Installation',
     description: 'Safe and professional wiring installation for homes and businesses. Code-compliant work guaranteed.',
     price: 550,
@@ -64,6 +79,7 @@ const defaultServices = [
     mediaUrl: 'https://source.unsplash.com/featured/?electrician,wiring,installation'
   },
   {
+    category: CAT.PLUMBING_ELECTRICAL,
     title: 'Light Installation',
     description: 'Installation of lighting fixtures, chandeliers, and outdoor lighting. Professional and safe.',
     price: 300,
@@ -72,6 +88,7 @@ const defaultServices = [
     mediaUrl: 'https://source.unsplash.com/featured/?electrician,lighting,installation'
   },
   {
+    category: CAT.CLEANING,
     title: 'House Cleaning',
     description: 'Comprehensive house cleaning services. Deep cleaning, regular maintenance, and move-in/out cleaning.',
     price: 450,
@@ -80,6 +97,7 @@ const defaultServices = [
     mediaUrl: 'https://source.unsplash.com/featured/?house,cleaning,maid,interior'
   },
   {
+    category: CAT.CLEANING,
     title: 'Office Cleaning',
     description: 'Professional office cleaning services. Keep your workspace clean and productive.',
     price: 600,
@@ -88,6 +106,7 @@ const defaultServices = [
     mediaUrl: 'https://source.unsplash.com/featured/?office,cleaning,janitor'
   },
   {
+    category: CAT.CLEANING,
     title: 'Deep Cleaning',
     description: 'Thorough deep cleaning service. Detailed cleaning of all areas including hard-to-reach places.',
     price: 750,
@@ -96,6 +115,7 @@ const defaultServices = [
     mediaUrl: 'https://source.unsplash.com/featured/?deep,cleaning,house'
   },
   {
+    category: CAT.HOME_REPAIRS,
     title: 'Furniture Repair',
     description: 'Expert furniture repair and restoration services. Fix broken chairs, tables, and wooden furniture.',
     price: 400,
@@ -104,6 +124,7 @@ const defaultServices = [
     mediaUrl: 'https://source.unsplash.com/featured/?carpenter,furniture,repair,woodworking'
   },
   {
+    category: CAT.HOME_REPAIRS,
     title: 'Cabinet Installation',
     description: 'Professional cabinet installation and repair. Kitchen, bathroom, and custom cabinets.',
     price: 650,
@@ -112,6 +133,7 @@ const defaultServices = [
     mediaUrl: 'https://source.unsplash.com/featured/?kitchen,cabinet,installation,carpenter'
   },
   {
+    category: CAT.HOME_REPAIRS,
     title: 'Door Repair',
     description: 'Door repair and installation services. Fix squeaky doors, broken locks, and damaged frames.',
     price: 350,
@@ -120,6 +142,7 @@ const defaultServices = [
     mediaUrl: 'https://source.unsplash.com/featured/?door,repair,carpenter,handyman'
   },
   {
+    category: CAT.HOME_REPAIRS,
     title: 'Interior Painting',
     description: 'Professional interior painting services. Transform your home with quality paint work.',
     price: 500,
@@ -128,6 +151,7 @@ const defaultServices = [
     mediaUrl: 'https://source.unsplash.com/featured/?interior,painting,painter,home'
   },
   {
+    category: CAT.HOME_REPAIRS,
     title: 'Exterior Painting',
     description: 'Exterior painting and weatherproofing. Protect and beautify your home exterior.',
     price: 800,
@@ -136,6 +160,7 @@ const defaultServices = [
     mediaUrl: 'https://source.unsplash.com/featured/?exterior,painting,house,facade'
   },
   {
+    category: CAT.GARDENING,
     title: 'Lawn Mowing',
     description: 'Regular lawn mowing and grass cutting services. Keep your lawn neat and well-maintained.',
     price: 250,
@@ -144,6 +169,7 @@ const defaultServices = [
     mediaUrl: 'https://source.unsplash.com/featured/?lawn,mowing,gardener,grass'
   },
   {
+    category: CAT.GARDENING,
     title: 'Garden Design',
     description: 'Professional garden design and landscaping services. Create beautiful outdoor spaces.',
     price: 1200,
@@ -152,12 +178,71 @@ const defaultServices = [
     mediaUrl: 'https://source.unsplash.com/featured/?garden,design,landscaping'
   },
   {
+    category: CAT.GARDENING,
     title: 'Tree Trimming',
     description: 'Safe tree trimming and pruning services. Maintain healthy trees and improve aesthetics.',
     price: 450,
     duration: 120,
     // Real image for tree trimming
     mediaUrl: 'https://source.unsplash.com/featured/?tree,trimming,arborist'
+  },
+  // Security & Access (aligns with website Services section)
+  {
+    category: CAT.SECURITY_ACCESS,
+    title: 'Lock Change',
+    description: 'Professional lock change and installation services. New or replacement locks for doors, gates and safes.',
+    price: 350,
+    duration: 60,
+    mediaUrl: 'https://source.unsplash.com/featured/?locksmith,lock,key'
+  },
+  {
+    category: CAT.SECURITY_ACCESS,
+    title: 'Gate & Garage Remote',
+    description: 'Gate motor and garage remote programming, repair and replacement. Get your access working again.',
+    price: 280,
+    duration: 45,
+    mediaUrl: 'https://source.unsplash.com/featured/?garage,remote,gate'
+  },
+  {
+    category: CAT.SECURITY_ACCESS,
+    title: 'Security Check',
+    description: 'Basic home security assessment and minor access control fixes. Peace of mind for your property.',
+    price: 400,
+    duration: 90,
+    mediaUrl: 'https://source.unsplash.com/featured/?security,home,safety'
+  },
+  // Appliance Help (aligns with website Services section)
+  {
+    category: CAT.APPLIANCE_HELP,
+    title: 'Washing Machine Repair',
+    description: 'Repair and maintenance for washing machines. Fix spin, drain and electrical issues.',
+    price: 350,
+    duration: 90,
+    mediaUrl: 'https://source.unsplash.com/featured/?washing,machine,repair'
+  },
+  {
+    category: CAT.APPLIANCE_HELP,
+    title: 'Fridge & Freezer Repair',
+    description: 'Fridge and freezer repair services. Fix cooling, sealing and compressor issues.',
+    price: 450,
+    duration: 120,
+    mediaUrl: 'https://source.unsplash.com/featured/?fridge,repair,refrigerator'
+  },
+  {
+    category: CAT.APPLIANCE_HELP,
+    title: 'Stove & Oven Repair',
+    description: 'Stove and oven repair and maintenance. Fix heating, ignition and thermostat issues.',
+    price: 400,
+    duration: 90,
+    mediaUrl: 'https://source.unsplash.com/featured/?stove,oven,repair'
+  },
+  {
+    category: CAT.APPLIANCE_HELP,
+    title: 'Small Appliance Repair',
+    description: 'Repair for kettles, microwaves, toasters and other small household appliances.',
+    price: 250,
+    duration: 60,
+    mediaUrl: 'https://source.unsplash.com/featured/?appliance,repair,small'
   },
 ];
 
@@ -204,7 +289,16 @@ async function main() {
       });
 
       if (existing) {
-        log('⏭️', `Skipped: ${serviceData.title} (already exists)`, colors.yellow);
+        // Backfill category for existing services that don't have it
+        if (serviceData.category && !existing.category) {
+          await prisma.service.update({
+            where: { id: existing.id },
+            data: { category: serviceData.category }
+          });
+          log('🔄', `Updated category: ${serviceData.title}`, colors.cyan);
+        } else {
+          log('⏭️', `Skipped: ${serviceData.title} (already exists)`, colors.yellow);
+        }
         skipped++;
         continue;
       }
@@ -214,7 +308,7 @@ async function main() {
       const service = await prisma.service.create({
         data: {
           ...serviceDataWithoutCategory,
-          ...serviceDataWithoutCategory,
+          category: category || null,
           providerId: null, // No provider assigned - admins can assign later
           status: 'active',
           adminApproved: true,
