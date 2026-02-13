@@ -15,6 +15,12 @@
 import prisma from '../lib/database';
 
 async function cleanupOrphanedRecords() {
+  // SAFETY CHECK: NEVER run in production
+  if (process.env.NODE_ENV === 'production') {
+    console.error('\n❌ CLEANUP BLOCKED: This script cannot run in production!\n');
+    console.error('🔒 Production data is protected. Run cleanup only in development.\n');
+    process.exit(1);
+  }
   // SAFETY CHECK: Require explicit admin confirmation
   const allowCleanup = process.env.ALLOW_CLEANUP === 'true';
   

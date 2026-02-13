@@ -14,6 +14,13 @@
 // Usage: node scripts/cleanupUsers.js
 require('dotenv').config();
 
+// SAFETY CHECK: NEVER run in production
+if (process.env.NODE_ENV === 'production') {
+  console.error('\n❌ CLEANUP BLOCKED: This script cannot run in production!\n');
+  console.error('🔒 Production data is protected. Run cleanup only in development.\n');
+  process.exit(1);
+}
+
 // SAFETY CHECK: Require explicit admin confirmation
 if (process.env.ALLOW_CLEANUP !== 'true') {
   console.error('\n❌ CLEANUP BLOCKED: Automatic cleanup is disabled!\n');
