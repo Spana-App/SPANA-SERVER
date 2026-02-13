@@ -668,6 +668,50 @@ function buildCustomerWelcomeEmail({ name, email, password }: any) {
   return { subject, text, html };
 }
 
+function buildProfileCompleteEmail({ firstName, lastName }: any) {
+  const name = [firstName, lastName].filter(Boolean).join(' ').trim() || 'there';
+  const subject = 'Your SPANA Profile is 100% Complete! 🎉';
+  const text = `Hi ${name},\n\nCongratulations! Your service provider profile on SPANA is now 100% complete.\n\nYou're all set to:\n• Create and manage your services\n• Receive booking requests from customers\n• Start earning on the SPANA platform\n\nLog in to the SPANA app to get started.\n\nThanks,\nThe SPANA Team`;
+  const html = `
+    <div style="font-family:Arial,Helvetica,sans-serif;line-height:1.5;color:#333;max-width:600px;margin:0 auto;padding:20px;">
+      <div style="background:#0066CC;padding:30px;text-align:center;border-radius:10px 10px 0 0;">
+        <h1 style="color:#ffffff;margin:0;font-size:28px;">Profile 100% Complete! 🎉</h1>
+      </div>
+      <div style="background:#F5F5F5;padding:30px;border-radius:0 0 10px 10px;">
+        <h2 style="color:#000000;margin:0 0 12px">Congratulations, ${name}!</h2>
+        <p>Your service provider profile on SPANA is now 100% complete.</p>
+        <p>You're all set to:</p>
+        <ul style="color:#333;">
+          <li>Create and manage your services</li>
+          <li>Receive booking requests from customers</li>
+          <li>Start earning on the SPANA platform</li>
+        </ul>
+        <p>Log in to the SPANA app to get started.</p>
+        <p style="margin-top:24px">Thanks,<br/>The SPANA Team</p>
+      </div>
+    </div>
+  `;
+  return { subject, text, html };
+}
+
+async function sendProfileCompleteEmail(user: any) {
+  const { subject, text, html } = buildProfileCompleteEmail({ firstName: user.firstName, lastName: user.lastName });
+  if (USE_EMAIL_SERVICE && emailService.isEmailServiceEnabled()) {
+    try {
+      return await emailService.sendEmailViaService({
+        to: user.email,
+        subject,
+        text,
+        html,
+        type: 'profile_complete'
+      });
+    } catch (error: any) {
+      console.error('[Mailer] Email service failed, falling back to SMTP:', error.message);
+    }
+  }
+  return sendMailWithRetry({ to: user.email, subject, text, html });
+}
+
 async function sendCustomerWelcomeEmail({ to, name, email, password }: any) {
   if (USE_EMAIL_SERVICE && emailService.isEmailServiceEnabled()) {
     try {
@@ -697,6 +741,7 @@ module.exports = {
   sendInvoiceEmail,
   sendAdminOTPEmail,
   sendAdminCredentialsEmail,
+  sendProfileCompleteEmail,
   sendCustomerWelcomeEmail,
   async verifySmtp() {
     try {

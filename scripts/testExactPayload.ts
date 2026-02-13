@@ -86,7 +86,7 @@ async function testExactPayload() {
       console.log(`   Booking ID: ${res.data.booking?.id || res.data.id}`);
       console.log(`   Status: ${res.data.booking?.status || res.data.status}`);
       console.log(`   Calculated Price: R${res.data.booking?.calculatedPrice || res.data.calculatedPrice}`);
-    } else if (res.status === 202) {
+    } else if (res.status === 201 && res.data?.queued) {
       console.log('\n⚠️  Booking queued (no providers available)');
       console.log(`   Message: ${res.data.message}`);
     } else {

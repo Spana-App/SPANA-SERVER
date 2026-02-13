@@ -48,6 +48,10 @@ exports.getAllServices = async (req, res) => {
       // Customers and others only see admin-approved active services
       where.adminApproved = true;
       where.status = 'active';
+      // When SHOW_SYSTEM_SERVICES_ON_WEBSITE=false, exclude seeded services - only show admin-created
+      if (String(process.env.SHOW_SYSTEM_SERVICES_ON_WEBSITE || 'true').toLowerCase() === 'false') {
+        where.isSystemService = false;
+      }
     }
 
     const services = await prisma.service.findMany({
@@ -419,12 +423,16 @@ const CATEGORY_CONFIG: Record<string, { title: string; description: string; feat
 // GET /services/categories - returns only categories that have services in DB
 exports.getCategories = async (req, res) => {
   try {
+    const where: any = {
+      adminApproved: true,
+      status: 'active',
+      category: { not: null },
+    };
+    if (String(process.env.SHOW_SYSTEM_SERVICES_ON_WEBSITE || 'true').toLowerCase() === 'false') {
+      where.isSystemService = false;
+    }
     const services = await prisma.service.findMany({
-      where: {
-        adminApproved: true,
-        status: 'active',
-        category: { not: null },
-      },
+      where,
       select: {
         id: true,
         title: true,

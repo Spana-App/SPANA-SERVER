@@ -105,7 +105,7 @@ async function run() {
       location: { type: 'Point', coordinates: [28.0473, -26.2041], address: 'Sandton' },
       notes: 'Full test',
     }, customerToken);
-    add('/bookings (create)', 'POST', r.ok || r.status === 202 || r.status === 400, r.status);
+    add('/bookings (create)', 'POST', r.ok || r.status === 201 || r.status === 400, r.status);
     if (r.data?.booking?.id) bookingId = r.data.booking.id;
 
     if (!bookingId && customerId && serviceId) {

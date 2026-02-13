@@ -23,6 +23,9 @@
     "db:generate": "npx prisma generate",
     "postinstall": "npx prisma generate",
     "seed:default-services": "npx ts-node scripts/seedDefaultServices.ts",
+    "complete:oscar": "npx ts-node scripts/completeOscarProfile.ts",
+    "send:oscar-email": "npx ts-node scripts/sendOscarProfileEmail.ts",
+    "assign:oscar-services": "npx ts-node scripts/assignServicesToOscar.ts",
     "seed:all": "npx ts-node scripts/seedComprehensiveData.ts",
     "verify:db": "npx ts-node scripts/verifyDatabaseSync.ts"
   },

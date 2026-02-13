@@ -176,8 +176,8 @@ async function testBookingEndpoints() {
         }
       );
 
-      logTest('Create Booking (serviceTitle)', bookingRes.status === 201 || bookingRes.status === 202, 
-        bookingRes.status === 202 ? 'Queued (no providers available)' : `Booking ID: ${bookingRes.data.booking?.id || bookingRes.data.id}`);
+      logTest('Create Booking (serviceTitle)', bookingRes.status === 201, 
+        bookingRes.data?.queued ? 'Queued (no providers available)' : `Booking ID: ${bookingRes.data.booking?.id || bookingRes.data.id}`);
       log('   Payload sent:', colors.cyan);
       console.log(JSON.stringify(bookingPayload2, null, 2));
       log('   Response:', colors.cyan);

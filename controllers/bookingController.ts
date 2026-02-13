@@ -166,7 +166,7 @@ exports.createBooking = async (req: any, res: any) => {
 
       if (!providerMatch) {
         // No providers available - add to queue
-        return res.status(202).json({
+        return res.status(201).json({
           message: 'No providers available at this time. Your request has been queued.',
           queued: true,
           estimatedWaitTime: '5-15 minutes',
@@ -184,7 +184,7 @@ exports.createBooking = async (req: any, res: any) => {
 
     // If no provider match found, queue the request
     if (!providerMatch) {
-      return res.status(202).json({
+      return res.status(201).json({
         message: 'No providers available at this time. Your request has been queued.',
         queued: true,
         estimatedWaitTime: '5-15 minutes',

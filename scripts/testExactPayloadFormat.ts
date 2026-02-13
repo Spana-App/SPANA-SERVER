@@ -150,7 +150,7 @@ async function testExactPayload() {
         log(`      - jobSize: ${exactPayload.jobSize}`, colors.green);
         log(`      - customPrice: ${exactPayload.customPrice}`, colors.green);
         
-      } else if (bookingRes.status === 202) {
+      } else if (bookingRes.status === 201 && bookingRes.data?.queued) {
         log('\n   ⚠️  Booking Queued (No providers available)', colors.yellow);
         log('   Response:', colors.cyan);
         console.log(JSON.stringify(bookingRes.data, null, 2));

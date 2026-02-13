@@ -230,7 +230,9 @@ exports.getAllProviders = async (req, res) => {
           rating: user.serviceProvider.rating,
           totalReviews: user.serviceProvider.totalReviews,
           isVerified: user.serviceProvider.isVerified,
-          isIdentityVerified: user.serviceProvider.isIdentityVerified
+          isIdentityVerified: user.serviceProvider.isIdentityVerified,
+          isOnline: user.serviceProvider.isOnline,
+          isProfileComplete: user.serviceProvider.isProfileComplete
         };
       }
       
