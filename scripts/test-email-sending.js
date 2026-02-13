@@ -6,7 +6,7 @@ async function testEmailSending() {
 
     require('dotenv').config();
     const emailServiceUrl = process.env.EMAIL_SERVICE_URL || 'http://localhost:3000';
-    const apiSecret = process.env.EMAIL_SERVICE_SECRET || process.env.API_SECRET || 'e37cf6365bf1daa23bbb4dfd359a978117857dfabb5410478ca0f8c58880cbf3';
+    const apiSecret = process.env.EMAIL_SERVICE_SECRET || process.env.API_SECRET;
 
     console.log('Email Service URL:', emailServiceUrl);
     console.log('Testing welcome email...\n');

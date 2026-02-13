@@ -425,6 +425,9 @@ app.use((req: any, res: any, next: any) => {
   next();
 });
 
+// Stripe webhook must receive raw body for signature verification (before express.json)
+app.post('/payments/webhook', express.raw({ type: 'application/json' }), require('./controllers/paymentController').webhookHandler);
+
 // Body parsing middleware
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));

@@ -51,6 +51,11 @@ router.post('/admins/register', auth, authorize('admin'), adminController.regist
 // Admin Profile Management (Admin updates their own profile/password)
 router.put('/profile', auth, authorize('admin'), adminController.updateAdminProfile);
 
+// Admin Profile Image Upload (Admin can upload profile photo)
+// Note: Admins can also use /auth/profile/image, but this provides admin-specific route
+const imageUpload = require('../middleware/imageUpload');
+router.post('/profile/image', auth, authorize('admin'), imageUpload.single('image'), require('../controllers/authController').uploadProfileImage);
+
 // Service Provider Applications
 // Get all applications (with optional status filter and pagination)
 router.get('/applications', auth, authorize('admin'), adminController.getAllApplications);

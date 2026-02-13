@@ -4,28 +4,33 @@ const { sendReceiptEmail } = require('../config/mailer');
 const workflowClient = require('../lib/workflowClient');
 const crypto = require('crypto');
 
-// PayFast configuration
-const PAYFAST_MERCHANT_ID = process.env.PAYFAST_MERCHANT_ID;
-const PAYFAST_MERCHANT_KEY = process.env.PAYFAST_MERCHANT_KEY;
-const PAYFAST_PASSPHRASE = process.env.PAYFAST_PASSPHRASE;
-const PAYFAST_URL = process.env.PAYFAST_URL || 'https://sandbox.payfast.co.za/eng/process';
+// Stripe (sandbox/test mode when using sk_test_ / pk_test_ keys)
+const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY;
+const STRIPE_PUBLISHABLE_KEY = process.env.STRIPE_PUBLISHABLE_KEY;
+const stripeClient = STRIPE_SECRET_KEY ? require('stripe')(STRIPE_SECRET_KEY) : null;
 
-// Generate PayFast signature
-function generatePayFastSignature(data: any): string {
-  const pfParamString = Object.keys(data)
-    .filter(key => data[key] !== '' && key !== 'signature')
-    .sort()
-    .map(key => `${key}=${encodeURIComponent(data[key])}`)
-    .join('&');
-  
-  return crypto.createHash('md5').update(pfParamString + (PAYFAST_PASSPHRASE ? `&passphrase=${PAYFAST_PASSPHRASE}` : '')).digest('hex');
-}
+// PayFast configuration (COMMENTED OUT - using Stripe)
+// const PAYFAST_MERCHANT_ID = process.env.PAYFAST_MERCHANT_ID;
+// const PAYFAST_MERCHANT_KEY = process.env.PAYFAST_MERCHANT_KEY;
+// const PAYFAST_PASSPHRASE = process.env.PAYFAST_PASSPHRASE;
+// const PAYFAST_URL = process.env.PAYFAST_URL || 'https://sandbox.payfast.co.za/eng/process';
+
+// Generate PayFast signature (commented out - using Stripe)
+// function generatePayFastSignature(data: any): string {
+//   const pfParamString = Object.keys(data)
+//     .filter(key => data[key] !== '' && key !== 'signature')
+//     .sort()
+//     .map(key => `${key}=${encodeURIComponent(data[key])}`)
+//     .join('&');
+//   return crypto.createHash('md5').update(pfParamString + (PAYFAST_PASSPHRASE ? `&passphrase=${PAYFAST_PASSPHRASE}` : '')).digest('hex');
+// }
 
 
-// Create payment intent (PayFast)
+// Create payment intent (PayFast or Stripe sandbox)
 exports.createPaymentIntent = async (req, res) => {
   try {
-    const { bookingId, amount, currency = 'ZAR', tipAmount = 0 } = req.body;
+    // Stripe only (PayFast commented out)
+    const { bookingId, amount, currency = 'ZAR', tipAmount = 0, gateway = 'stripe' } = req.body;
 
     const booking = await prisma.booking.findUnique({
       where: { id: bookingId },
@@ -70,15 +75,23 @@ exports.createPaymentIntent = async (req, res) => {
       return res.status(400).json({ message: 'Customer profile not found' });
     }
 
+    if (!stripeClient) {
+      return res.status(503).json({
+        message: 'Stripe payment gateway is not configured.',
+        error: 'STRIPE_NOT_CONFIGURED',
+        instructions: 'Add STRIPE_SECRET_KEY and STRIPE_PUBLISHABLE_KEY (test keys for sandbox) to your .env'
+      });
+    }
     const referenceNumber = await generatePaymentReferenceAsync();
+
     const payment = await prisma.payment.create({
       data: {
-        referenceNumber, // SPANA-PY-000001
+        referenceNumber,
         customerId: customer.id,
         bookingId,
-        amount: totalAmount, // Total includes tip
+        amount: totalAmount,
         currency: 'ZAR',
-        paymentMethod: 'payfast',
+        paymentMethod: 'stripe',
         status: 'pending',
         escrowStatus: 'held',
         commissionRate,
@@ -87,13 +100,40 @@ exports.createPaymentIntent = async (req, res) => {
       }
     });
 
-    // Check if PayFast is configured
+    // --- Stripe: create PaymentIntent and return clientSecret for frontend ---
+      const amountCents = Math.round(totalAmount * 100); // Stripe uses smallest currency unit (cents for ZAR)
+      const paymentIntent = await stripeClient.paymentIntents.create({
+        amount: amountCents,
+        currency: (currency || 'zar').toLowerCase(),
+        automatic_payment_methods: { enabled: true },
+        metadata: {
+          bookingId,
+          paymentId: payment.id,
+          userId: req.user.id
+        }
+      });
+      await prisma.payment.update({
+        where: { id: payment.id },
+        data: { transactionId: paymentIntent.id }
+      });
+      await prisma.booking.update({
+        where: { id: bookingId },
+        data: { paymentStatus: 'pending', escrowAmount, commissionAmount }
+      });
+      return res.json({
+        paymentId: payment.id,
+        clientSecret: paymentIntent.client_secret,
+        stripePublishableKey: STRIPE_PUBLISHABLE_KEY || undefined,
+        amount: totalAmount,
+        baseAmount: baseAmount,
+        tipAmount: tip,
+        currency: 'ZAR',
+        gateway: 'stripe'
+      });
+
+    /* PAYFAST - COMMENTED OUT (using Stripe)
     const payfastConfigured = PAYFAST_MERCHANT_ID && PAYFAST_MERCHANT_KEY && PAYFAST_PASSPHRASE;
-    
-    // Payment simulation mode DISABLED by default
-    // Only works if PayFast is configured AND explicitly requested with simulate=true
     const simulatePayment = req.body.simulate === true && payfastConfigured;
-    
     if (simulatePayment) {
       // Simulate payment success
       const invoiceNumber = `INV-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${Math.random().toString(36).substr(2, 5).toUpperCase()}`;
@@ -289,19 +329,25 @@ exports.createPaymentIntent = async (req, res) => {
       currency: 'ZAR',
       configured: true
     });
+    */
   } catch (error) {
     console.error('createPaymentIntent error', error);
     res.status(500).json({ message: 'Server error' });
   }
 };
 
-// PayFast webhook handler
+// PayFast webhook handler (commented out - using Stripe only)
 exports.payfastWebhook = async (req, res) => {
+  return res.status(200).send('OK');
+  /* PayFast disabled - using Stripe
   try {
-    // PayFast sends data as form-encoded or query params
+    if (process.env.STRIPE_SECRET_KEY || stripeClient) {
+      return res.status(200).send('OK');
+    }
     const data = req.method === 'POST' ? req.body : req.query;
-
-    // Verify signature
+    if (!data || (!data.pf_payment_id && !data.payment_status && !data.signature)) {
+      return res.status(200).send('OK');
+    }
     const receivedSignature = data.signature;
     const calculatedSignature = generatePayFastSignature(data);
     
@@ -541,6 +587,7 @@ exports.payfastWebhook = async (req, res) => {
     console.error('PayFast webhook error', error);
     res.status(500).json({ message: 'Webhook processing error' });
   }
+  */
 };
 
 // Release funds to provider (called when booking is completed)
@@ -925,10 +972,10 @@ exports.confirmPayment = async (req, res) => {
 // Get payment history for user
 exports.getPaymentHistory = async (req, res) => {
   try {
-    // Admins can see all payments, customers see only their own
+    // Admins can see all payments, customers see only their own (by userId via customer relation)
     const where: any = req.user.role === 'admin' 
       ? {} // Admin sees all payments
-      : { customerId: req.user.id }; // Customer sees only their payments
+      : { customer: { userId: req.user.id } }; // Customer sees only their payments
     
     const payments = await prisma.payment.findMany({
       where,
@@ -1017,166 +1064,146 @@ exports.refundPayment = async (req, res) => {
 
 export {};
 
-// Legacy webhook handler (kept for backward compatibility)
+// Stripe webhook handler (sandbox: use STRIPE_WEBHOOK_SECRET from Stripe CLI or Dashboard)
 exports.webhookHandler = async (req: any, res: any) => {
   try {
-    // Note: Stripe support removed, using PayFast only
-    // Use /payments/payfast-webhook for PayFast webhooks
-    const stripeClient: any = null; // Stripe removed, use PayFast
     if (stripeClient && process.env.STRIPE_WEBHOOK_SECRET) {
       const sig = req.headers['stripe-signature'];
       let event;
       try {
         event = stripeClient.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
       } catch (err) {
-        console.error('Stripe webhook signature verification failed:', err && err.message);
-        return res.status(400).send(`Webhook Error: ${err.message}`);
+        console.error('Stripe webhook signature verification failed:', err && (err as Error).message);
+        return res.status(400).send(`Webhook Error: ${(err as Error).message}`);
       }
 
-      // Handle common events
       if (event.type === 'payment_intent.succeeded') {
         const pi = event.data.object;
-        try {
-          const bookingId = (pi.metadata && pi.metadata.bookingId) || null;
-          // Try to find an existing payment by transactionId or bookingId
-          let payment = null;
-          if (pi.id) payment = await prisma.payment.findFirst({ where: { transactionId: pi.id } });
-          if (!payment && bookingId) payment = await prisma.payment.findFirst({ where: { bookingId } });
+        const bookingId = (pi.metadata && pi.metadata.bookingId) || null;
+        const paymentIdFromMeta = (pi.metadata && pi.metadata.paymentId) || null;
 
-          if (!payment) {
-            // Create a new payment record
-            const userId = (pi.metadata && pi.metadata.userId) || null;
-            
-            if (userId) {
-              // Get customer ID from user
-              const customer = await prisma.customer.findUnique({
-                where: { userId }
-              });
-
-              if (customer) {
-                const referenceNumber = await generatePaymentReferenceAsync();
-                payment = await prisma.payment.create({
-                  data: {
-                    referenceNumber, // SPANA-PY-000001
-                    customerId: customer.id,
-                    bookingId,
-                    amount: (pi.amount && pi.amount / 100) || 0,
-                    currency: (pi.currency || 'usd').toUpperCase(),
-                    paymentMethod: 'card',
-                    status: 'completed',
-                    transactionId: pi.id
-                  }
-                });
-              }
+        const paymentInclude = {
+          booking: {
+            include: {
+              service: { include: { provider: { include: { user: true } } } },
+              customer: { include: { user: true } }
             }
-          } else {
-            // Update existing payment
-            payment = await prisma.payment.update({
-              where: { id: payment.id },
-              data: {
-                status: 'completed',
-                transactionId: pi.id
-              }
-            });
           }
+        };
+        let payment = paymentIdFromMeta
+          ? await prisma.payment.findUnique({ where: { id: paymentIdFromMeta }, include: paymentInclude })
+          : await prisma.payment.findFirst({ where: { transactionId: pi.id }, include: paymentInclude });
 
-          // Mark booking as confirmed if bookingId present
-          if (bookingId) {
-            await prisma.booking.update({
-              where: { id: bookingId },
-              data: { status: 'confirmed' }
-            });
-
-            try {
-              await prisma.activity.create({
-                data: {
-                  userId: payment.customerId || null,
-                  actionType: 'payment_confirm',
-                  contentId: payment.id,
-                  contentModel: 'Payment',
-                  details: { bookingId }
-                }
-              });
-            } catch (_) {}
-
-              // create default workflow for the booking
-              try {
-                const defaultSteps = [
-                  { name: 'Provider assigned', status: 'pending' },
-                  { name: 'Service in progress', status: 'pending' },
-                  { name: 'Service completed', status: 'pending' }
-                ];
-                await workflowClient.createWorkflowForBooking(bookingId, defaultSteps).catch(() => {});
-              } catch (_) {}
-
-            // Emit socket event to notify parties
-            try {
-              const app = require('../server');
-              const io = app.get && app.get('io');
-              if (io) {
-                io.to(String(payment.customerId)).emit('payment-updated', payment);
-                const booking = await prisma.booking.findUnique({
-                  where: { id: bookingId },
-                  include: {
-                    service: {
-                      include: {
-                        provider: {
-                          include: {
-                            user: {
-                              select: { id: true }
-                            }
-                          }
-                        }
-                      }
-                    }
-                  }
-                });
-                if (booking?.service?.provider?.user?.id) io.to(String(booking.service.provider.user.id)).emit('payment-updated', payment);
-              }
-            } catch (_) {}
-          }
-
-          // Send receipts
-          try {
-            const booking = bookingId ? await prisma.booking.findUnique({
-              where: { id: bookingId },
-              include: {
-                service: {
-                  include: {
-                    provider: {
-                      include: {
-                        user: {
-                          select: { email: true }
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            }) : null;
-
-            const customer = payment.customerId ? await prisma.user.findUnique({
-              where: { id: payment.customerId },
-              select: { email: true }
-            }) : null;
-
-            const payload = {
-              amount: payment.amount,
-              currency: payment.currency || 'USD',
-              bookingId,
-              transactionId: payment.transactionId,
-              createdAt: payment.createdAt
-            };
-
-            if (customer?.email) sendReceiptEmail({ to: customer.email, toRole: 'customer', ...payload }).catch(() => {});
-            if (booking?.service?.provider?.user?.email) sendReceiptEmail({ to: booking.service.provider.user.email, toRole: 'provider', ...payload }).catch(() => {});
-          } catch (_) {}
-        } catch (reconErr) {
-          console.error('Webhook reconcile error', reconErr);
+        if (!payment || !bookingId) {
+          console.error('Stripe webhook: payment or bookingId not found', { paymentIdFromMeta, bookingId });
+          return res.status(200).send('OK');
         }
+
+        // Idempotent: skip if already completed
+        if (payment.status === 'completed') return res.status(200).send('OK');
+
+        const amount = pi.amount ? pi.amount / 100 : payment.amount;
+        await prisma.payment.update({
+          where: { id: payment.id },
+          data: { status: 'completed', escrowStatus: 'held', transactionId: pi.id }
+        });
+
+        const invoiceNumber = `INV-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${Math.random().toString(36).substr(2, 5).toUpperCase()}`;
+        const { generateChatToken } = require('../lib/chatTokens');
+        const customerChatToken = payment.booking?.customer?.userId
+          ? generateChatToken(bookingId, payment.booking.customer.userId, 'customer')
+          : null;
+
+        await prisma.booking.update({
+          where: { id: bookingId },
+          data: {
+            paymentStatus: 'paid_to_escrow',
+            status: 'pending_acceptance',
+            invoiceNumber,
+            invoiceSentAt: new Date(),
+            customerChatToken,
+            chatActive: false
+          }
+        });
+
+        let wallet = await prisma.spanaWallet.findFirst();
+        if (!wallet) wallet = await prisma.spanaWallet.create({ data: { totalHeld: 0, totalReleased: 0, totalCommission: 0 } });
+        await prisma.spanaWallet.update({
+          where: { id: wallet.id },
+          data: { totalHeld: { increment: amount } }
+        });
+        await prisma.walletTransaction.create({
+          data: {
+            walletId: wallet.id,
+            type: 'deposit',
+            amount,
+            bookingId,
+            paymentId: payment.id,
+            description: `Payment received for booking ${bookingId} (Stripe)`
+          }
+        });
+
+        try {
+          const workflowController = require('../controllers/serviceWorkflowController');
+          await workflowController.updateWorkflowStepByName(bookingId, 'Payment Received', 'completed', 'Payment received (Stripe)');
+        } catch (_) {}
+
+        try {
+          const { sendInvoiceEmail } = require('../config/mailer');
+          const booking = await prisma.booking.findUnique({
+            where: { id: bookingId },
+            include: { service: true, customer: { include: { user: true } } }
+          });
+          if (booking?.customer?.user?.email) {
+            await sendInvoiceEmail({
+              to: booking.customer.user.email,
+              name: `${booking.customer.user.firstName || ''} ${booking.customer.user.lastName || ''}`.trim() || 'Customer',
+              invoiceNumber,
+              bookingId,
+              serviceTitle: booking.service.title,
+              amount,
+              currency: 'ZAR',
+              jobSize: booking.jobSize,
+              basePrice: booking.basePrice,
+              multiplier: booking.jobSizeMultiplier,
+              calculatedPrice: booking.calculatedPrice,
+              tipAmount: payment.tipAmount || 0,
+              date: new Date(),
+              transactionId: pi.id
+            }).catch(() => {});
+          }
+        } catch (_) {}
+
+        try {
+          const booking = await prisma.booking.findUnique({
+            where: { id: bookingId },
+            include: { service: { include: { provider: { include: { user: true } } } }, customer: { include: { user: true } } }
+          });
+          if (booking?.customer?.user?.email) sendReceiptEmail({ to: booking.customer.user.email, toRole: 'customer', amount, currency: 'ZAR', bookingId, transactionId: pi.id, createdAt: new Date() }).catch(() => {});
+          if (booking?.service?.provider?.user?.email) sendReceiptEmail({ to: booking.service.provider.user.email, toRole: 'provider', amount, currency: 'ZAR', bookingId, transactionId: pi.id, createdAt: new Date() }).catch(() => {});
+        } catch (_) {}
+
+        const customerUserId = payment.booking?.customer?.userId;
+        if (customerUserId) {
+          await prisma.activity.create({
+            data: { userId: customerUserId, actionType: 'payment_confirm', contentId: payment.id, contentModel: 'Payment', details: { bookingId } }
+          }).catch(() => {});
+        }
+
+        try {
+          const app = require('../server');
+          const io = app.get && app.get('io');
+          if (io && payment.booking?.customer?.user?.id) {
+            io.to(payment.booking.customer.user.id).emit('payment-received', { bookingId });
+            if (payment.booking.service?.provider?.user?.id) io.to(payment.booking.service.provider.user.id).emit('payment-received', { bookingId });
+            io.to(`booking:${bookingId}`).emit('chatroom-active', { bookingId });
+          }
+        } catch (_) {}
       }
+      return res.status(200).send('OK');
     }
-    // If Stripe is not configured (tests/local), attempt to parse JSON body and handle events similarly
+
+    // No Stripe config (e.g. tests)
     if (!stripeClient) {
       let event: any = req.body;
       try {

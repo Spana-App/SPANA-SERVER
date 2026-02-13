@@ -16,17 +16,14 @@ router.get('/history', auth, paymentController.getPaymentHistory);
 // Refund payment
 router.post('/refund', auth, paymentController.refundPayment);
 
-// PayFast webhook (no auth required - PayFast signs the request)
+// PayFast webhook - kept for backwards compatibility; handler returns 200 immediately (Stripe only)
 router.post('/payfast-webhook', express.urlencoded({ extended: true }), paymentController.payfastWebhook);
 router.get('/payfast-webhook', paymentController.payfastWebhook);
 
 // Release funds (admin only)
 router.post('/:bookingId/release', auth, authorize('admin'), paymentController.releaseFunds);
 
-// Optional webhook endpoint (no auth) — only attach if handler exists
-if (paymentController && typeof paymentController.webhookHandler === 'function') {
-	router.post('/webhook', express.raw({ type: 'application/json' }), paymentController.webhookHandler);
-}
+// Stripe webhook is mounted in server.ts (before express.json) so it receives raw body
 
 module.exports = router;
 export {};

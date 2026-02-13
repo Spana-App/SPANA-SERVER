@@ -1394,13 +1394,14 @@ exports.registerAdmin = async (req: any, res: any) => {
 exports.updateAdminProfile = async (req: any, res: any) => {
   try {
     const adminId = req.user.id; // From auth middleware
-    const { password, firstName, lastName, phone } = req.body;
+    const { password, firstName, lastName, phone, profileImage } = req.body;
 
     const updateData: any = {};
     
     if (firstName) updateData.firstName = firstName;
     if (lastName) updateData.lastName = lastName;
     if (phone) updateData.phone = phone;
+    if (profileImage) updateData.profileImage = profileImage;
     
     // Update password if provided
     if (password) {

@@ -54,12 +54,15 @@ async function testChatConversation() {
     const customerEmail = customer.email;
     log('    ✅', `Customer: ${customerEmail}`, colors.green);
     
-    // Find provider
+    // Find provider (must have ServiceProvider record for booking)
     log('  ✓', '1.2 Finding provider...', colors.white);
-    const provider = await prismaFindUsers.user.findFirst({
+    const providerWithRecord = await prismaFindUsers.serviceProvider.findFirst({
+      include: { user: true }
+    });
+    const provider = providerWithRecord?.user ?? (await prismaFindUsers.user.findFirst({
       where: { role: 'service_provider' },
       include: { serviceProvider: true }
-    });
+    }));
     
     if (!provider) {
       throw new Error('No provider found in database');
@@ -104,24 +107,34 @@ async function testChatConversation() {
     const PrismaBooking = require('@prisma/client').PrismaClient;
     const prismaBooking = new PrismaBooking();
     
-    const providerRecord = await prismaBooking.serviceProvider.findUnique({
+    let providerRecord = await prismaBooking.serviceProvider.findUnique({
       where: { userId: providerId },
       include: { services: true }
     });
+    if (!providerRecord) {
+      providerRecord = await prismaBooking.serviceProvider.findFirst({ include: { services: true } });
+      if (providerRecord) providerId = providerRecord.userId;
+    }
     
     let service = providerRecord?.services?.find((s: any) => s.adminApproved && s.status === 'active');
-    if (!service) {
+    if (!service && providerRecord) {
       service = await prismaBooking.service.create({
         data: {
           title: 'Chat Test Service',
           description: 'Service for testing chat feature',
           price: 500,
           duration: 60,
-          providerId: providerRecord!.id,
+          providerId: providerRecord.id,
           adminApproved: true,
           status: 'active'
         }
       });
+    }
+    if (!service) {
+      service = await prismaBooking.service.findFirst({ where: { adminApproved: true, status: 'active' } });
+    }
+    if (!service) {
+      throw new Error('No service available. Seed services first.');
     }
     
     // Create booking via DB (for testing)
@@ -265,7 +278,8 @@ async function testChatConversation() {
       
       try {
         if (customerToken !== 'direct-access') {
-          const historyResponse = await axios.get(`${BASE_URL}/chat/history/${providerId}`, {
+          // Use booking chat endpoint (messages have chatType: 'booking')
+          const historyResponse = await axios.get(`${BASE_URL}/chat/booking/${bookingId}`, {
             headers: { Authorization: `Bearer ${customerToken}` }
           });
 

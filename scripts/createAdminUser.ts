@@ -2,14 +2,18 @@ import prisma from '../lib/database';
 import bcrypt from 'bcryptjs';
 const { generateUserId } = require('../lib/spanaIdGenerator');
 
-const email = 'xoli@spana.co.za';
-const password = 'TestPassword123!';
-const firstName = 'Xoli';
-const lastName = 'Nxiweni';
-const phone = '+27123456789';
+const email = process.env.ADMIN_EMAIL || 'xoli@spana.co.za';
+const password = process.env.ADMIN_PASSWORD || process.env.ADMIN_INITIAL_PASSWORD;
+const firstName = process.env.ADMIN_FIRST_NAME || 'Xoli';
+const lastName = process.env.ADMIN_LAST_NAME || 'Nxiweni';
+const phone = process.env.ADMIN_PHONE || '+27123456789';
 
 async function createAdminUser() {
   try {
+    if (!password) {
+      console.error('❌ Set ADMIN_PASSWORD or ADMIN_INITIAL_PASSWORD in .env\n');
+      process.exit(1);
+    }
     console.log('👤 Creating admin user...\n');
 
     // Check if user already exists

@@ -237,7 +237,7 @@ model Payment {
   referenceNumber String? @unique // SPANA-PY-000001
   amount          Float
   currency        String  @default("ZAR")
-  paymentMethod   String // 'payfast', 'wallet', 'mobile_money'
+  paymentMethod   String // 'payfast', 'stripe', 'wallet', 'mobile_money'
   status          String  @default("pending") // 'pending', 'completed', 'failed', 'refunded'
   transactionId   String?
 

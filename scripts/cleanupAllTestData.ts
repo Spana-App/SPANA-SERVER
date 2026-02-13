@@ -1,11 +1,37 @@
 /**
  * Cleanup All Test Data
+ * ⚠️  WARNING: This script DELETES data permanently!
+ * 
  * Removes all E2E test users, orphaned records, and test applications
+ * 
+ * ⚠️  SAFETY: This script requires explicit admin confirmation via environment variable.
+ * To run this script, you MUST set: ALLOW_CLEANUP=true
+ * 
+ * Example: ALLOW_CLEANUP=true npx ts-node scripts/cleanupAllTestData.ts
+ * 
+ * This prevents accidental automatic execution. All deletions must be manual and intentional.
  */
 
 import prisma from '../lib/database';
 
 async function cleanupAllTestData() {
+  // SAFETY CHECK: Require explicit admin confirmation
+  const allowCleanup = process.env.ALLOW_CLEANUP === 'true';
+  
+  if (!allowCleanup) {
+    console.error('\n❌ CLEANUP BLOCKED: Automatic cleanup is disabled!\n');
+    console.error('⚠️  This script DELETES data permanently.');
+    console.error('⚠️  To prevent accidental data loss, this script requires explicit confirmation.\n');
+    console.error('📋 To run this script manually (admin only):');
+    console.error('   Set environment variable: ALLOW_CLEANUP=true');
+    console.error('   Example: ALLOW_CLEANUP=true npx ts-node scripts/cleanupAllTestData.ts\n');
+    console.error('🔒 Policy: All deletions must be manual and intentional.');
+    console.error('   Automatic cleanup is NOT allowed.\n');
+    process.exit(1);
+  }
+
+  console.log('\n⚠️  WARNING: This script will DELETE data permanently!');
+  console.log('⚠️  You have explicitly enabled cleanup with ALLOW_CLEANUP=true\n');
   console.log('🧹 Cleaning up ALL test data and orphaned records...\n');
 
   try {

@@ -14,7 +14,7 @@ require('dotenv').config();
 import axios from 'axios';
 
 const EMAIL_SERVICE_URL = process.env.EMAIL_SERVICE_URL || 'http://localhost:3000';
-const API_SECRET = process.env.EMAIL_SERVICE_SECRET || process.env.API_SECRET || 'e37cf6365bf1daa23bbb4dfd359a978117857dfabb5410478ca0f8c58880cbf3';
+const API_SECRET = process.env.EMAIL_SERVICE_SECRET || process.env.API_SECRET;
 const TEST_EMAIL = 'xoli@spana.co.za';
 
 // Colors for console output
