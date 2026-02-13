@@ -534,7 +534,40 @@ exports.getAllBookings = async (req: any, res: any) => {
       orderBy: { createdAt: 'desc' }
     });
 
-    res.json(bookings);
+    // Include flattened aliases for CMS tables that expect top-level fields.
+    // Keep original nested relations intact for backward compatibility.
+    const normalized = bookings.map((booking: any) => {
+      const customerUser = booking.customer?.user || null;
+      const providerUser = booking.service?.provider?.user || null;
+      const service = booking.service || null;
+      const payment = booking.payment || null;
+
+      const clientName = customerUser
+        ? `${customerUser.firstName || ''} ${customerUser.lastName || ''}`.trim() || customerUser.email || null
+        : null;
+      const providerName = providerUser
+        ? `${providerUser.firstName || ''} ${providerUser.lastName || ''}`.trim() || providerUser.email || null
+        : null;
+
+      return {
+        ...booking,
+        // Common flat fields CMS tables often bind directly
+        clientName,
+        providerName,
+        serviceTitle: service?.title || null,
+        amount: payment?.amount ?? booking.calculatedPrice ?? null,
+        paymentState: booking.paymentStatus || payment?.status || null,
+        // Also expose compact objects for frontend convenience
+        client: customerUser
+          ? { id: customerUser.id, name: clientName, email: customerUser.email || null }
+          : null,
+        provider: providerUser
+          ? { id: providerUser.id, name: providerName, email: providerUser.email || null }
+          : null
+      };
+    });
+
+    res.json(normalized);
   } catch (error) {
     res.status(500).json({ message: 'Server error' });
   }
