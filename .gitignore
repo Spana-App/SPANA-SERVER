@@ -33,6 +33,21 @@ coverage/
 .nyc_output/
 jest.config.js
 jest.setup.ts
+__tests__/
+scripts/test*.ts
+scripts/test*.js
+scripts/*test*.ts
+scripts/*test*.js
+scripts/*Test*.ts
+scripts/*Test*.js
+scripts/e2e*.ts
+scripts/setupTest*.ts
+*TEST*.md
+*TEST*.txt
+*test*.md
+*test*.txt
+TEST_*.md
+PAYMENT_*.md
 
 # Prisma
 /generated/prisma

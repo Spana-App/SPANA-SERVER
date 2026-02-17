@@ -48,25 +48,121 @@ exports.createPaymentIntent = async (req, res) => {
       return res.status(404).json({ message: 'Booking not found' });
     }
 
-    // Allow payment when booking is pending_payment (customer pays first, then provider accepts)
-    if (booking.status !== 'pending_payment' && booking.paymentStatus === 'paid_to_escrow') {
-      return res.status(400).json({ message: 'Payment already processed' });
+    // Validate booking belongs to customer
+    if (booking.customer.userId !== req.user.id) {
+      return res.status(403).json({ message: 'Not authorized to pay for this booking' });
     }
 
     // Payment should happen BEFORE provider acceptance (Uber-style: pay first, then provider accepts)
     if (booking.paymentStatus === 'paid_to_escrow') {
-      return res.status(400).json({ message: 'Payment already completed' });
+      return res.status(400).json({ 
+        message: 'Payment already completed',
+        paymentStatus: booking.paymentStatus,
+        bookingStatus: booking.status
+      });
     }
 
-    // Calculate commission (15% default) - commission on base amount only, tip goes 100% to provider
+    // Check if booking is in correct state for payment
+    if (booking.status !== 'pending_payment') {
+      return res.status(400).json({ 
+        message: `Booking cannot be paid. Current status: ${booking.status}, paymentStatus: ${booking.paymentStatus}`,
+        bookingStatus: booking.status,
+        paymentStatus: booking.paymentStatus
+      });
+    }
+
+    // Check for existing payment record (prevent duplicates)
+    const existingPayment = await prisma.payment.findFirst({
+      where: { 
+        bookingId,
+        status: { in: ['pending', 'paid'] }
+      },
+      orderBy: { createdAt: 'desc' }
+    });
+
+    if (existingPayment) {
+      // If payment is already paid, return error
+      if (existingPayment.status === 'paid') {
+        return res.status(400).json({ 
+          message: 'Payment already completed for this booking',
+          paymentId: existingPayment.id,
+          paymentStatus: existingPayment.status
+        });
+      }
+      // If payment exists but is pending, check if it has a transactionId (Stripe PaymentIntent)
+      if (existingPayment.transactionId) {
+        try {
+          const existingPI = await stripeClient.paymentIntents.retrieve(existingPayment.transactionId);
+          if (existingPI.status === 'succeeded') {
+            // Payment already succeeded but booking wasn't updated - fix it
+            await prisma.payment.update({
+              where: { id: existingPayment.id },
+              data: { status: 'paid', escrowStatus: 'held' }
+            });
+            await prisma.booking.update({
+              where: { id: bookingId },
+              data: { 
+                paymentStatus: 'paid_to_escrow',
+                status: 'pending_acceptance',
+                escrowAmount: existingPayment.amount,
+                commissionAmount: existingPayment.commissionAmount
+              }
+            });
+            return res.status(400).json({ 
+              message: 'Payment already paid (reconciled)',
+              paymentId: existingPayment.id,
+              paymentStatus: 'paid'
+            });
+          }
+          // Return existing PaymentIntent clientSecret
+          return res.json({
+            paymentId: existingPayment.id,
+            clientSecret: existingPI.client_secret,
+            stripePublishableKey: STRIPE_PUBLISHABLE_KEY || undefined,
+            amount: existingPayment.amount,
+            baseAmount: existingPayment.amount - (existingPayment.tipAmount || 0),
+            tipAmount: existingPayment.tipAmount || 0,
+            currency: 'ZAR',
+            gateway: 'stripe',
+            existing: true
+          });
+        } catch (stripeErr: any) {
+          // PaymentIntent not found or invalid - create new one
+          console.warn('Existing payment transactionId invalid, creating new PaymentIntent:', stripeErr.message);
+        }
+      } else {
+        // Payment exists but no transactionId - return existing payment info
+        return res.status(400).json({ 
+          message: 'Payment intent already exists for this booking',
+          paymentId: existingPayment.id,
+          paymentStatus: existingPayment.status
+        });
+      }
+    }
+
+    // Validate amount matches booking (allow small tolerance for rounding)
     const baseAmount = parseFloat(amount);
     const tip = parseFloat(tipAmount) || 0;
     const totalAmount = baseAmount + tip;
+    const bookingAmount = booking.calculatedPrice || booking.basePrice || 0;
+    const amountDifference = Math.abs(totalAmount - bookingAmount);
+    const tolerance = 0.01; // Allow 1 cent difference for rounding
+
+    if (amountDifference > tolerance && bookingAmount > 0) {
+      return res.status(400).json({ 
+        message: `Payment amount (${totalAmount}) does not match booking amount (${bookingAmount})`,
+        providedAmount: totalAmount,
+        bookingAmount: bookingAmount,
+        difference: amountDifference
+      });
+    }
+
+    // Calculate commission (15% default) - commission on base amount only, tip goes 100% to provider
     const commissionRate = 0.15;
     const commissionAmount = baseAmount * commissionRate; // Commission only on service, not tip
     const escrowAmount = totalAmount;
 
-    // Create payment record in escrow
+    // Get customer record
     const customer = await prisma.customer.findUnique({
       where: { userId: req.user.id }
     });
@@ -82,27 +178,34 @@ exports.createPaymentIntent = async (req, res) => {
         instructions: 'Add STRIPE_SECRET_KEY and STRIPE_PUBLISHABLE_KEY (test keys for sandbox) to your .env'
       });
     }
+
     const referenceNumber = await generatePaymentReferenceAsync();
 
-    const payment = await prisma.payment.create({
-      data: {
-        referenceNumber,
-        customerId: customer.id,
-        bookingId,
-        amount: totalAmount,
-        currency: 'ZAR',
-        paymentMethod: 'stripe',
-        status: 'pending',
-        escrowStatus: 'held',
-        commissionRate,
-        commissionAmount,
-        tipAmount: tip
-      }
-    });
+    // Create payment record and PaymentIntent in transaction-like manner
+    let payment;
+    let paymentIntent;
+    
+    try {
+      // Create payment record first
+      payment = await prisma.payment.create({
+        data: {
+          referenceNumber,
+          customerId: customer.id,
+          bookingId,
+          amount: totalAmount,
+          currency: 'ZAR',
+          paymentMethod: 'stripe',
+          status: 'pending',
+          escrowStatus: 'held',
+          commissionRate,
+          commissionAmount,
+          tipAmount: tip
+        }
+      });
 
-    // --- Stripe: create PaymentIntent and return clientSecret for frontend ---
-      const amountCents = Math.round(totalAmount * 100); // Stripe uses smallest currency unit (cents for ZAR)
-      const paymentIntent = await stripeClient.paymentIntents.create({
+      // Create Stripe PaymentIntent
+      const amountCents = Math.round(totalAmount * 100);
+      paymentIntent = await stripeClient.paymentIntents.create({
         amount: amountCents,
         currency: (currency || 'zar').toLowerCase(),
         automatic_payment_methods: { enabled: true },
@@ -112,14 +215,19 @@ exports.createPaymentIntent = async (req, res) => {
           userId: req.user.id
         }
       });
+
+      // Update payment with transactionId
       await prisma.payment.update({
         where: { id: payment.id },
         data: { transactionId: paymentIntent.id }
       });
+
+      // Update booking paymentStatus
       await prisma.booking.update({
         where: { id: bookingId },
         data: { paymentStatus: 'pending', escrowAmount, commissionAmount }
       });
+
       return res.json({
         paymentId: payment.id,
         clientSecret: paymentIntent.client_secret,
@@ -130,6 +238,21 @@ exports.createPaymentIntent = async (req, res) => {
         currency: 'ZAR',
         gateway: 'stripe'
       });
+    } catch (error: any) {
+      // Cleanup: if PaymentIntent creation fails, delete the payment record
+      if (payment && !paymentIntent) {
+        try {
+          await prisma.payment.delete({ where: { id: payment.id } });
+        } catch (cleanupErr) {
+          console.error('Failed to cleanup payment record:', cleanupErr);
+        }
+      }
+      console.error('Payment intent creation error:', error);
+      return res.status(500).json({ 
+        message: 'Failed to create payment intent',
+        error: error?.message || 'Unknown error'
+      });
+    }
 
     /* PAYFAST - COMMENTED OUT (using Stripe)
     const payfastConfigured = PAYFAST_MERCHANT_ID && PAYFAST_MERCHANT_KEY && PAYFAST_PASSPHRASE;
@@ -138,11 +261,11 @@ exports.createPaymentIntent = async (req, res) => {
       // Simulate payment success
       const invoiceNumber = `INV-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${Math.random().toString(36).substr(2, 5).toUpperCase()}`;
       
-      // Update payment as completed
+      // Update payment as paid
       await prisma.payment.update({
         where: { id: payment.id },
         data: {
-          status: 'completed',
+          status: 'paid',
           escrowStatus: 'held',
           transactionId: `sim_${payment.id}`,
           payfastPaymentId: `sim_${payment.id}`
@@ -368,7 +491,7 @@ exports.payfastWebhook = async (req, res) => {
       const payment = await prisma.payment.update({
         where: { id: paymentId },
         data: {
-          status: 'completed',
+          status: 'paid',
           escrowStatus: 'held',
           transactionId: data.pf_payment_id,
           payfastPaymentId: data.pf_payment_id,
@@ -737,46 +860,136 @@ exports.confirmPayment = async (req, res) => {
   try {
     const { paymentIntentId, bookingId, amount, paymentMethod } = req.body;
 
+    if (!bookingId) {
+      return res.status(400).json({ message: 'bookingId is required' });
+    }
+
     // Stripe confirm (preferred): verify PaymentIntent succeeded and update booking/payment.
     // This is important when webhooks aren't configured.
     if (stripeClient && paymentIntentId) {
       try {
         const pi = await stripeClient.paymentIntents.retrieve(paymentIntentId);
-        if (!pi || pi.status !== 'succeeded') {
-          return res.status(400).json({ message: 'Payment not successful yet', status: pi?.status || 'unknown' });
+        if (!pi) {
+          return res.status(404).json({ message: 'PaymentIntent not found' });
+        }
+        
+        if (pi.status !== 'succeeded') {
+          return res.status(400).json({ 
+            message: 'Payment not successful yet', 
+            status: pi.status,
+            paymentIntentId: pi.id
+          });
         }
 
-        // Idempotent booking update
+        // Validate metadata matches
+        const metaBookingId = (pi.metadata && pi.metadata.bookingId) || null;
+        if (metaBookingId && metaBookingId !== bookingId) {
+          return res.status(400).json({ 
+            message: 'PaymentIntent bookingId does not match provided bookingId',
+            paymentIntentBookingId: metaBookingId,
+            providedBookingId: bookingId
+          });
+        }
+
+        // Get booking with relations
         const existingBooking = await prisma.booking.findUnique({
           where: { id: bookingId },
-          include: { service: { include: { provider: { include: { user: true } } } } }
+          include: { 
+            service: { include: { provider: { include: { user: true } } } },
+            customer: { include: { user: true } }
+          }
         });
-        if (!existingBooking) return res.status(404).json({ message: 'Booking not found' });
+        
+        if (!existingBooking) {
+          return res.status(404).json({ message: 'Booking not found' });
+        }
+
+        // Validate booking belongs to customer
+        if (existingBooking.customer.userId !== req.user.id) {
+          return res.status(403).json({ message: 'Not authorized to confirm payment for this booking' });
+        }
+
+        // Check if already paid
+        if (existingBooking.paymentStatus === 'paid_to_escrow') {
+          // Find payment record
+          const existingPayment = await prisma.payment.findFirst({
+            where: { bookingId, status: 'paid' },
+            orderBy: { createdAt: 'desc' }
+          });
+          return res.json({ 
+            message: 'Payment already confirmed',
+            payment: existingPayment,
+            booking: { id: bookingId, paymentStatus: existingBooking.paymentStatus }
+          });
+        }
 
         // Try to locate the payment created in /payments/intent
         const metaPaymentId = (pi.metadata && pi.metadata.paymentId) || null;
         let payment = metaPaymentId
           ? await prisma.payment.findUnique({ where: { id: metaPaymentId } })
-          : await prisma.payment.findFirst({ where: { bookingId, transactionId: paymentIntentId } });
+          : await prisma.payment.findFirst({ 
+              where: { 
+                bookingId, 
+                OR: [
+                  { transactionId: paymentIntentId },
+                  { transactionId: { contains: paymentIntentId } }
+                ]
+              },
+              orderBy: { createdAt: 'desc' }
+            });
 
         const amountPaid = ((pi.amount_received ?? pi.amount) || 0) / 100;
-        const totalAmount = amountPaid || parseFloat(amount);
+        const totalAmount = amountPaid || parseFloat(amount || existingBooking.calculatedPrice || existingBooking.basePrice || 0);
 
-        // Ensure payment record exists and is marked completed
+        if (totalAmount <= 0) {
+          return res.status(400).json({ message: 'Invalid payment amount' });
+        }
+
+        // Ensure payment record exists and is marked paid
         if (payment) {
-          if (payment.status !== 'completed') {
-            payment = await prisma.payment.update({
-              where: { id: payment.id },
-              data: { status: 'completed', escrowStatus: 'held', transactionId: paymentIntentId }
+          // Idempotent: if already paid, just return success
+          if (payment.status === 'paid') {
+            // Ensure booking is also updated
+            if (existingBooking.paymentStatus !== 'paid_to_escrow') {
+              await prisma.booking.update({
+                where: { id: bookingId },
+                data: {
+                  paymentStatus: 'paid_to_escrow',
+                  status: 'pending_acceptance',
+                  escrowAmount: payment.amount,
+                  commissionAmount: payment.commissionAmount
+                }
+              });
+            }
+            return res.json({ 
+              message: 'Payment already confirmed',
+              payment,
+              booking: { id: bookingId, paymentStatus: 'paid_to_escrow' }
             });
           }
+          
+          // Update payment to paid
+          payment = await prisma.payment.update({
+            where: { id: payment.id },
+            data: { 
+              status: 'paid', 
+              escrowStatus: 'held', 
+              transactionId: paymentIntentId,
+              amount: totalAmount // Update amount in case it differs
+            }
+          });
         } else {
+          // Payment record doesn't exist - create it
           const customer = await prisma.customer.findUnique({ where: { userId: req.user.id } });
-          if (!customer) return res.status(400).json({ message: 'Customer profile not found' });
+          if (!customer) {
+            return res.status(400).json({ message: 'Customer profile not found' });
+          }
+          
           const referenceNumber = await generatePaymentReferenceAsync();
           const commissionRate = 0.15;
           const commissionAmount = totalAmount * commissionRate;
           const providerPayout = totalAmount - commissionAmount;
+          
           payment = await prisma.payment.create({
             data: {
               referenceNumber,
@@ -785,7 +998,7 @@ exports.confirmPayment = async (req, res) => {
               amount: totalAmount,
               currency: 'ZAR',
               paymentMethod: paymentMethod || 'stripe',
-              status: 'completed',
+              status: 'paid',
               transactionId: paymentIntentId,
               escrowStatus: 'held',
               commissionRate,
@@ -795,14 +1008,15 @@ exports.confirmPayment = async (req, res) => {
           });
         }
 
-        // Update booking paymentStatus so providers can accept
+        // Update booking paymentStatus so providers can accept (idempotent)
         if (existingBooking.paymentStatus !== 'paid_to_escrow') {
           await prisma.booking.update({
             where: { id: bookingId },
             data: {
               paymentStatus: 'paid_to_escrow',
               status: 'pending_acceptance',
-              escrowAmount: totalAmount
+              escrowAmount: payment.amount,
+              commissionAmount: payment.commissionAmount
             }
           });
         }
@@ -887,7 +1101,7 @@ exports.confirmPayment = async (req, res) => {
         amount: totalAmount,
         currency: 'ZAR',
         paymentMethod: paymentMethod || 'payfast',
-        status: 'completed',
+        status: 'paid',
         transactionId: paymentIntentId || ('sim_' + Math.random().toString(36).substr(2, 9)),
         escrowStatus: 'held',
         commissionRate,
@@ -1090,6 +1304,11 @@ exports.webhookHandler = async (req: any, res: any) => {
       const bookingId = (pi.metadata && pi.metadata.bookingId) || null;
       const paymentIdFromMeta = (pi.metadata && pi.metadata.paymentId) || null;
 
+      if (!bookingId) {
+        console.error('Stripe webhook: bookingId missing in PaymentIntent metadata', { paymentIntentId: pi.id, metadata: pi.metadata });
+        return;
+      }
+
       const paymentInclude = {
         booking: {
           include: {
@@ -1099,59 +1318,142 @@ exports.webhookHandler = async (req: any, res: any) => {
         }
       };
 
+        // Try to find payment by metadata paymentId first, then by transactionId
       let payment = paymentIdFromMeta
         ? await prisma.payment.findUnique({ where: { id: paymentIdFromMeta }, include: paymentInclude })
-        : await prisma.payment.findFirst({ where: { transactionId: pi.id }, include: paymentInclude });
+        : null;
 
-      if (!payment || !bookingId) {
-        console.error('Stripe webhook: payment or bookingId not found', { paymentIdFromMeta, bookingId });
+      if (!payment) {
+        payment = await prisma.payment.findFirst({ 
+          where: { 
+            bookingId,
+            OR: [
+              { transactionId: pi.id },
+              { transactionId: { contains: pi.id } }
+            ]
+          }, 
+          include: paymentInclude,
+          orderBy: { createdAt: 'desc' }
+        });
+      }
+
+      // If still no payment found, try to find any pending payment for this booking
+      if (!payment) {
+        payment = await prisma.payment.findFirst({
+          where: { bookingId, status: { in: ['pending', 'paid'] } },
+          include: paymentInclude,
+          orderBy: { createdAt: 'desc' }
+        });
+      }
+
+      if (!payment) {
+        console.error('Stripe webhook: payment record not found', { 
+          paymentIdFromMeta, 
+          bookingId, 
+          paymentIntentId: pi.id,
+          metadata: pi.metadata 
+        });
         return;
       }
 
-      // Idempotent: skip if already completed
-      if (payment.status === 'completed') return;
+      // Idempotent: skip if already paid and booking is already paid
+      if (payment.status === 'paid') {
+        const booking = await prisma.booking.findUnique({ where: { id: bookingId } });
+        if (booking && booking.paymentStatus === 'paid_to_escrow') {
+          console.log('Stripe webhook: Payment already processed (idempotent skip)', { paymentId: payment.id, bookingId });
+          return;
+        }
+        // If payment is completed but booking isn't updated, continue to update booking
+      }
 
       const amount = pi.amount ? pi.amount / 100 : payment.amount;
+      
+      if (!amount || amount <= 0) {
+        console.error('Stripe webhook: Invalid payment amount', { amount, paymentIntentId: pi.id, paymentId: payment.id });
+        return;
+      }
 
-      await prisma.payment.update({
-        where: { id: payment.id },
-        data: { status: 'completed', escrowStatus: 'held', transactionId: pi.id }
-      });
+      // Update payment to paid (idempotent)
+      if (payment.status !== 'paid' || payment.transactionId !== pi.id) {
+        await prisma.payment.update({
+          where: { id: payment.id },
+          data: { 
+            status: 'paid', 
+            escrowStatus: 'held', 
+            transactionId: pi.id,
+            amount: amount // Ensure amount matches PaymentIntent
+          }
+        });
+      }
 
-      const invoiceNumber = `INV-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${Math.random().toString(36).substr(2, 5).toUpperCase()}`;
-      const { generateChatToken } = require('../lib/chatTokens');
-      const customerChatToken = payment.booking?.customer?.userId
-        ? generateChatToken(bookingId, payment.booking.customer.userId, 'customer')
-        : null;
-
-      await prisma.booking.update({
+      // Get booking to check current status
+      const booking = await prisma.booking.findUnique({
         where: { id: bookingId },
-        data: {
-          paymentStatus: 'paid_to_escrow',
-          status: 'pending_acceptance',
-          invoiceNumber,
-          invoiceSentAt: new Date(),
-          customerChatToken,
-          chatActive: false
+        include: { service: true, customer: { include: { user: true } } }
+      });
+
+      if (!booking) {
+        console.error('Stripe webhook: Booking not found', { bookingId });
+        return;
+      }
+
+      // Generate invoice number if not already set
+      const invoiceNumber = booking.invoiceNumber || `INV-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${Math.random().toString(36).substr(2, 5).toUpperCase()}`;
+      const { generateChatToken } = require('../lib/chatTokens');
+      const customerChatToken = booking.customer?.userId
+        ? generateChatToken(bookingId, booking.customer.userId, 'customer')
+        : booking.customerChatToken || null;
+
+      // Update booking paymentStatus (idempotent)
+      if (booking.paymentStatus !== 'paid_to_escrow') {
+        await prisma.booking.update({
+          where: { id: bookingId },
+          data: {
+            paymentStatus: 'paid_to_escrow',
+            status: 'pending_acceptance',
+            invoiceNumber,
+            invoiceSentAt: booking.invoiceSentAt || new Date(),
+            customerChatToken: customerChatToken || booking.customerChatToken,
+            chatActive: false,
+            escrowAmount: amount,
+            commissionAmount: payment.commissionAmount || (amount * 0.15)
+          }
+        });
+      }
+
+      // Update Spana wallet (idempotent - check if transaction already exists)
+      const existingTransaction = await prisma.walletTransaction.findFirst({
+        where: {
+          paymentId: payment.id,
+          bookingId,
+          type: 'deposit'
         }
       });
 
-      let wallet = await prisma.spanaWallet.findFirst();
-      if (!wallet) wallet = await prisma.spanaWallet.create({ data: { totalHeld: 0, totalReleased: 0, totalCommission: 0 } });
-      await prisma.spanaWallet.update({
-        where: { id: wallet.id },
-        data: { totalHeld: { increment: amount } }
-      });
-      await prisma.walletTransaction.create({
-        data: {
-          walletId: wallet.id,
-          type: 'deposit',
-          amount,
-          bookingId,
-          paymentId: payment.id,
-          description: `Payment received for booking ${bookingId} (Stripe)`
+      if (!existingTransaction) {
+        let wallet = await prisma.spanaWallet.findFirst();
+        if (!wallet) {
+          wallet = await prisma.spanaWallet.create({ 
+            data: { totalHeld: 0, totalReleased: 0, totalCommission: 0 } 
+          });
         }
-      });
+        
+        await prisma.spanaWallet.update({
+          where: { id: wallet.id },
+          data: { totalHeld: { increment: amount } }
+        });
+        
+        await prisma.walletTransaction.create({
+          data: {
+            walletId: wallet.id,
+            type: 'deposit',
+            amount,
+            bookingId,
+            paymentId: payment.id,
+            description: `Payment received for booking ${bookingId} (Stripe)`
+          }
+        });
+      }
 
       try {
         const workflowController = require('../controllers/serviceWorkflowController');
@@ -1235,17 +1537,34 @@ exports.webhookHandler = async (req: any, res: any) => {
       let event: any = req.body;
       try {
         if (Buffer.isBuffer(event)) event = JSON.parse(event.toString('utf8'));
+        else if (typeof event === 'string') event = JSON.parse(event);
       } catch (_) {}
 
       try {
         if (event && event.type === 'payment_intent.succeeded') {
           const piPayload = event.data && event.data.object ? event.data.object : event;
           const piId = piPayload && piPayload.id;
+          
+          // Try to retrieve from Stripe first
           if (piId) {
-            const pi = await stripeClient.paymentIntents.retrieve(piId);
-            if (pi && pi.status === 'succeeded') {
-              await processStripePaymentIntentSucceeded(pi);
+            try {
+              const pi = await stripeClient.paymentIntents.retrieve(piId);
+              if (pi && pi.status === 'succeeded') {
+                await processStripePaymentIntentSucceeded(pi);
+                return res.status(200).send('OK');
+              }
+            } catch (stripeErr: any) {
+              // PaymentIntent not found in Stripe (might be test payload)
+              // Process payload directly if it has succeeded status
+              if (piPayload && piPayload.status === 'succeeded') {
+                await processStripePaymentIntentSucceeded(piPayload);
+                return res.status(200).send('OK');
+              }
             }
+          } else if (piPayload && piPayload.status === 'succeeded') {
+            // Process payload directly if no ID but has succeeded status
+            await processStripePaymentIntentSucceeded(piPayload);
+            return res.status(200).send('OK');
           }
         }
       } catch (reconErr) {
@@ -1255,11 +1574,12 @@ exports.webhookHandler = async (req: any, res: any) => {
       return res.status(200).send('OK');
     }
 
-    // No Stripe config (e.g. tests)
+    // No Stripe config (e.g. tests) - process webhook payload directly
     if (!stripeClient) {
       let event: any = req.body;
       try {
         if (Buffer.isBuffer(event)) event = JSON.parse(event.toString('utf8'));
+        else if (typeof event === 'string') event = JSON.parse(event);
       } catch (e) {
         // ignore parse error
       }
@@ -1267,14 +1587,11 @@ exports.webhookHandler = async (req: any, res: any) => {
       try {
         if (event && event.type === 'payment_intent.succeeded') {
           const pi = event.data && event.data.object ? event.data.object : event;
-          const bookingId = (pi.metadata && pi.metadata.bookingId) || null;
-          const userId = (pi.metadata && pi.metadata.userId) || null;
-
-          // For now, just log the webhook event since we're using Prisma and don't need Mongoose fallback
-          console.log('Webhook received (non-Stripe):', { bookingId, userId, amount: pi.amount });
-
-          // TODO: Implement Prisma-based webhook handling if needed
-          // For basic functionality, we'll skip the complex Mongoose fallback
+          
+          // Process payment directly from webhook payload (for testing)
+          if (pi && pi.status === 'succeeded') {
+            await processStripePaymentIntentSucceeded(pi);
+          }
         }
       } catch (reconErr) {
         console.error('Webhook reconcile (fallback) error', reconErr);

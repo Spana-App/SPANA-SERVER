@@ -10,6 +10,8 @@
     "test": "jest",
     "test:routes": "npx ts-node scripts/testAllRoutes.ts",
     "test:payments": "npx ts-node scripts/testPayments.ts",
+    "test:payment-flow": "npx ts-node scripts/testPaymentFlow.ts",
+    "test:payment-webhook": "npx ts-node scripts/testPaymentWebhook.ts",
     "test:chat": "npx ts-node scripts/testChatConversation.ts",
     "test:all": "npx ts-node scripts/testAllBackendRoutes.ts",
     "test:admin": "npx ts-node scripts/testAdminCMSFlow.ts",

@@ -239,7 +239,7 @@ model Payment {
   amount          Float
   currency        String  @default("ZAR")
   paymentMethod   String // 'payfast', 'stripe', 'wallet', 'mobile_money'
-  status          String  @default("pending") // 'pending', 'completed', 'failed', 'refunded'
+  status          String  @default("pending") // 'pending', 'paid', 'failed', 'refunded'
   transactionId   String?
 
   // NEW: Escrow fields
