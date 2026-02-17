@@ -26,7 +26,7 @@ const stripeClient = STRIPE_SECRET_KEY ? require('stripe')(STRIPE_SECRET_KEY) : 
 // }
 
 
-// Create payment intent (PayFast or Stripe sandbox)
+// Create payment intent (Stripe card form in app)
 exports.createPaymentIntent = async (req, res) => {
   try {
     // Stripe only (PayFast commented out)
@@ -460,6 +460,174 @@ exports.createPaymentIntent = async (req, res) => {
   } catch (error) {
     console.error('createPaymentIntent error', error);
     res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// Create Stripe Checkout Session (redirect to Stripe-hosted payment page)
+// This is useful for web flows where you want Stripe's full payment UI.
+exports.createCheckoutSession = async (req, res) => {
+  try {
+    if (!stripeClient) {
+      return res.status(503).json({
+        message: 'Stripe payment gateway is not configured.',
+        error: 'STRIPE_NOT_CONFIGURED',
+        instructions: 'Add STRIPE_SECRET_KEY and STRIPE_PUBLISHABLE_KEY (test keys for sandbox) to your .env'
+      });
+    }
+
+    const { bookingId } = req.body;
+    if (!bookingId) {
+      return res.status(400).json({ message: 'bookingId is required' });
+    }
+
+    const booking = await prisma.booking.findUnique({
+      where: { id: bookingId },
+      include: {
+        service: {
+          include: {
+            provider: { include: { user: true } }
+          }
+        },
+        customer: { include: { user: true } }
+      }
+    });
+
+    if (!booking) {
+      return res.status(404).json({ message: 'Booking not found' });
+    }
+
+    // Ensure the current user is the booking customer
+    if (booking.customer.userId !== req.user.id) {
+      return res.status(403).json({ message: 'Not authorized to pay for this booking' });
+    }
+
+    // Prevent duplicate paid bookings
+    if (booking.paymentStatus === 'paid_to_escrow') {
+      return res.status(400).json({
+        message: 'Payment already completed',
+        paymentStatus: booking.paymentStatus,
+        bookingStatus: booking.status
+      });
+    }
+
+    if (booking.status !== 'pending_payment') {
+      return res.status(400).json({
+        message: `Booking cannot be paid. Current status: ${booking.status}, paymentStatus: ${booking.paymentStatus}`,
+        bookingStatus: booking.status,
+        paymentStatus: booking.paymentStatus
+      });
+    }
+
+    // Use booking.calculatedPrice as the source of truth for amount
+    const baseAmount = booking.calculatedPrice || booking.basePrice || 0;
+    if (!baseAmount || baseAmount <= 0) {
+      return res.status(400).json({ message: 'Booking amount is invalid or missing' });
+    }
+
+    const totalAmount = baseAmount; // no tip for Checkout flow (can extend later)
+    const amountCents = Math.round(totalAmount * 100);
+    const commissionRate = 0.15;
+    const commissionAmount = baseAmount * commissionRate;
+    const escrowAmount = totalAmount;
+
+    // Get customer record
+    const customer = await prisma.customer.findUnique({
+      where: { userId: req.user.id }
+    });
+
+    if (!customer) {
+      return res.status(400).json({ message: 'Customer profile not found' });
+    }
+
+    // Create a pending payment record so webhook/confirmation can update it later
+    const referenceNumber = await generatePaymentReferenceAsync();
+    const payment = await prisma.payment.create({
+      data: {
+        referenceNumber,
+        customerId: customer.id,
+        bookingId,
+        amount: totalAmount,
+        currency: 'ZAR',
+        paymentMethod: 'stripe',
+        status: 'pending',
+        escrowStatus: 'held',
+        commissionRate,
+        commissionAmount,
+        tipAmount: 0
+      }
+    });
+
+    // Build success / cancel URLs for Stripe Checkout
+    const clientBaseUrl = process.env.CLIENT_URL || process.env.EXTERNAL_API_URL || 'https://spana.app';
+    const successUrl = `${clientBaseUrl}/payment-success?bookingId=${bookingId}&paymentId=${payment.id}&session_id={CHECKOUT_SESSION_ID}`;
+    const cancelUrl = `${clientBaseUrl}/payment-cancelled?bookingId=${bookingId}&paymentId=${payment.id}`;
+
+    // Create Checkout Session; attach metadata so webhook can reconcile payment/booking
+    const session = await stripeClient.checkout.sessions.create({
+      mode: 'payment',
+      payment_method_types: ['card'],
+      line_items: [
+        {
+          price_data: {
+            currency: 'zar',
+            unit_amount: amountCents,
+            product_data: {
+              name: booking.service?.title || 'Spana service booking',
+              description: booking.service?.description || undefined
+            }
+          },
+          quantity: 1
+        }
+      ],
+      metadata: {
+        bookingId,
+        paymentId: payment.id,
+        userId: req.user.id
+      },
+      payment_intent_data: {
+        metadata: {
+          bookingId,
+          paymentId: payment.id,
+          userId: req.user.id
+        }
+      },
+      customer_email: booking.customer.user.email || undefined,
+      success_url: successUrl,
+      cancel_url: cancelUrl
+    });
+
+    // Store Checkout Session id on payment for debugging / reconciliation if needed
+    await prisma.payment.update({
+      where: { id: payment.id },
+      data: { transactionId: session.payment_intent || session.id }
+    });
+
+    // Mark booking as awaiting payment completion
+    await prisma.booking.update({
+      where: { id: bookingId },
+      data: {
+        paymentStatus: 'pending',
+        escrowAmount,
+        commissionAmount
+      }
+    });
+
+    // Frontend should redirect the user to this URL (window.location = checkoutUrl)
+    return res.json({
+      checkoutUrl: session.url,
+      sessionId: session.id,
+      paymentId: payment.id,
+      amount: totalAmount,
+      currency: 'ZAR',
+      stripePublishableKey: STRIPE_PUBLISHABLE_KEY || undefined,
+      gateway: 'stripe_checkout'
+    });
+  } catch (error: any) {
+    console.error('createCheckoutSession error', error);
+    return res.status(500).json({
+      message: 'Failed to create Stripe Checkout session',
+      error: error?.message || 'Unknown error'
+    });
   }
 };
 

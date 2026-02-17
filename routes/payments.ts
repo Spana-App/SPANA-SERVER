@@ -7,6 +7,9 @@ const authorize = require('../middleware/roles');
 // Create payment intent
 router.post('/intent', auth, paymentController.createPaymentIntent);
 
+// Create Stripe Checkout session (redirect flow)
+router.post('/checkout', auth, paymentController.createCheckoutSession);
+
 // Confirm payment
 router.post('/confirm', auth, paymentController.confirmPayment);
 
