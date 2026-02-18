@@ -256,8 +256,9 @@ exports.createBooking = async (req: any, res: any) => {
         const workflowClient = require('../lib/workflowClient');
         await workflowClient.createWorkflowForBooking(queuedBooking.id, [
           { name: 'Booking Request Created', status: 'completed' },
-          { name: 'Provider Assigned', status: 'pending' },
+          { name: 'Payment Required', status: 'pending' },
           { name: 'Payment Received', status: 'pending' },
+          { name: 'Provider Assigned', status: 'pending' },
           { name: 'Provider En Route', status: 'pending' },
           { name: 'Service In Progress', status: 'pending' },
           { name: 'Service Completed', status: 'pending' },
@@ -328,8 +329,9 @@ exports.createBooking = async (req: any, res: any) => {
       const workflowClient = require('../lib/workflowClient');
       const defaultSteps = [
         { name: 'Booking Request Created', status: 'completed' },
-        { name: 'Provider Assigned', status: 'pending' },
+        { name: 'Payment Required', status: 'pending' },
         { name: 'Payment Received', status: 'pending' },
+        { name: 'Provider Assigned', status: 'pending' },
         { name: 'Provider En Route', status: 'pending' },
         { name: 'Service In Progress', status: 'pending' },
         { name: 'Service Completed', status: 'pending' }

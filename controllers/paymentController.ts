@@ -1308,10 +1308,11 @@ exports.confirmPayment = async (req, res) => {
       }
     } catch (_) {}
 
-    // Update workflow: Payment Received
+    // Update workflow: Payment Required and Payment Received
     try {
       const workflowController = require('../controllers/serviceWorkflowController');
       await workflowController.updateWorkflowStepByName(bookingId, 'Payment Required', 'completed', 'Payment received');
+      await workflowController.updateWorkflowStepByName(bookingId, 'Payment Received', 'completed', 'Payment confirmed and held in escrow');
       await workflowController.updateWorkflowStepByName(bookingId, 'Provider Assigned', 'pending', 'Waiting for provider acceptance');
     } catch (_) {}
 
@@ -1625,6 +1626,7 @@ exports.webhookHandler = async (req: any, res: any) => {
 
       try {
         const workflowController = require('../controllers/serviceWorkflowController');
+        await workflowController.updateWorkflowStepByName(bookingId, 'Payment Required', 'completed', 'Payment received');
         await workflowController.updateWorkflowStepByName(bookingId, 'Payment Received', 'completed', 'Payment received (Stripe)');
       } catch (_) {}
 
