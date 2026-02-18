@@ -282,47 +282,85 @@ exports.createBooking = async (req: any, res: any) => {
 
     // Use location-adjusted price from provider matching
     const basePrice = providerMatch.adjustedPrice || service.price;
-    const calculatedPrice = selectedJobSize === 'custom' && customPrice 
-      ? parseFloat(customPrice) 
-      : basePrice * multiplier;
+    const calculatedPrice =
+      selectedJobSize === 'custom' && customPrice ? parseFloat(customPrice) : basePrice * multiplier;
 
     // Create booking request - Customer must pay first before provider allocation
     // Status: pending_payment (waiting for payment)
     // Date is set to current time for immediate service
-    const referenceNumber = await generateBookingReferenceAsync();
-    const booking = await prisma.booking.create({
-      data: {
-        referenceNumber, // SPANA-BK-000001
-        customerId: customer.id,
-        serviceId: service.id,
-        date: bookingDateTime, // Use validated date/time
-        time,
-        location: bookingLocation, // Use validated device location
-        notes,
-        estimatedDurationMinutes: estimatedDurationMinutes || service.duration,
-        jobSize: selectedJobSize,
-        basePrice: basePrice,
-        jobSizeMultiplier: multiplier,
-        calculatedPrice: calculatedPrice,
-        status: 'pending_payment', // NEW: Waiting for payment
-        requestStatus: 'pending', // Will be sent to providers after payment
-        paymentStatus: 'pending', // Payment required
-        locationMultiplier: providerMatch.locationMultiplier, // Store location multiplier
-        providerDistance: providerMatch.distance // Store distance to provider
-      },
-      include: {
-        service: {
+    // IMPORTANT: Handle potential referenceNumber collisions gracefully (P2002)
+    let booking: any = null;
+    const maxAttempts = 5;
+
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      const referenceNumber = await generateBookingReferenceAsync();
+
+      try {
+        booking = await prisma.booking.create({
+          data: {
+            referenceNumber, // SPANA-BK-000001
+            customerId: customer.id,
+            serviceId: service.id,
+            date: bookingDateTime, // Use validated date/time
+            time,
+            location: bookingLocation, // Use validated device location
+            notes,
+            estimatedDurationMinutes: estimatedDurationMinutes || service.duration,
+            jobSize: selectedJobSize,
+            basePrice: basePrice,
+            jobSizeMultiplier: multiplier,
+            calculatedPrice: calculatedPrice,
+            status: 'pending_payment', // NEW: Waiting for payment
+            requestStatus: 'pending', // Will be sent to providers after payment
+            paymentStatus: 'pending', // Payment required
+            locationMultiplier: providerMatch.locationMultiplier, // Store location multiplier
+            providerDistance: providerMatch.distance // Store distance to provider
+          },
           include: {
-            provider: {
+            service: {
+              include: {
+                provider: {
+                  include: { user: true }
+                }
+              }
+            },
+            customer: {
               include: { user: true }
             }
           }
-        },
-        customer: {
-          include: { user: true }
+        });
+
+        // Successfully created booking, exit retry loop
+        break;
+      } catch (err: any) {
+        // Handle unique constraint collision on referenceNumber and retry with a new one
+        if (
+          err &&
+          err.code === 'P2002' &&
+          (Array.isArray(err.meta?.target)
+            ? err.meta.target.includes('referenceNumber')
+            : err.meta?.target === 'referenceNumber')
+        ) {
+          console.warn(
+            `[createBooking] Reference number collision (${referenceNumber}), retrying... attempt ${
+              attempt + 1
+            }/${maxAttempts}`
+          );
+          booking = null;
+          continue;
         }
+
+        // Any other error: rethrow
+        throw err;
       }
-    });
+    }
+
+    if (!booking) {
+      console.error('[createBooking] Failed to generate unique booking reference after retries');
+      return res.status(500).json({
+        message: 'Could not generate unique booking reference. Please try again.'
+      });
+    }
 
     // Create workflow for booking
     try {
@@ -397,6 +435,18 @@ exports.acceptBookingRequest = async (req: any, res: any) => {
   try {
     const { id: bookingId } = req.params;
 
+    console.log('[acceptBookingRequest] Received request:', {
+      bookingId,
+      userId: req.user?.id,
+      userRole: req.user?.role,
+      params: req.params,
+    });
+
+    if (!bookingId) {
+      console.error('[acceptBookingRequest] No bookingId in params');
+      return res.status(400).json({ message: 'Booking ID is required' });
+    }
+
     const booking = await prisma.booking.findUnique({
       where: { id: bookingId },
       include: {
@@ -410,8 +460,17 @@ exports.acceptBookingRequest = async (req: any, res: any) => {
     });
 
     if (!booking) {
+      console.error('[acceptBookingRequest] Booking not found:', bookingId);
       return res.status(404).json({ message: 'Booking not found' });
     }
+
+    console.log('[acceptBookingRequest] Booking found:', {
+      id: booking.id,
+      serviceId: booking.serviceId,
+      providerId: booking.service?.provider?.id,
+      providerUserId: booking.service?.provider?.userId,
+      requestUserId: req.user?.id,
+    });
 
     // Verify provider owns the service
     const service = await prisma.service.findUnique({

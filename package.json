@@ -30,6 +30,7 @@
     "complete:oscar": "npx ts-node scripts/completeOscarProfile.ts",
     "complete:oscar-bookings": "npx ts-node scripts/completeOscarProfileWithBookings.ts",
     "test:realtime-booking": "npx ts-node scripts/testRealtimeBooking.ts",
+    "complete:booking": "npx ts-node scripts/completeBooking.ts",
     "complete:eksnxiweni": "npx ts-node scripts/completeEksnxiweniProfile.ts",
     "send:oscar-email": "npx ts-node scripts/sendOscarProfileEmail.ts",
     "assign:oscar-services": "npx ts-node scripts/assignServicesToOscar.ts",
