@@ -81,12 +81,49 @@ exports.createPaymentIntent = async (req, res) => {
     });
 
     if (existingPayment) {
-      // If payment is already paid, return error
+      // If payment is already paid, ensure booking and workflows are updated
       if (existingPayment.status === 'paid') {
-        return res.status(400).json({ 
+        // Ensure booking status is updated
+        const booking = await prisma.booking.findUnique({ where: { id: bookingId } });
+        if (booking && booking.paymentStatus !== 'paid_to_escrow') {
+          await prisma.booking.update({
+            where: { id: bookingId },
+            data: { 
+              paymentStatus: 'paid_to_escrow',
+              status: booking.status === 'pending_payment' ? 'pending_acceptance' : booking.status,
+              escrowAmount: existingPayment.amount,
+              commissionAmount: existingPayment.commissionAmount
+            }
+          });
+        }
+        
+        // Ensure workflows exist and are updated
+        try {
+          const workflowController = require('../controllers/serviceWorkflowController');
+          const workflowClient = require('../lib/workflowClient');
+          const defaultSteps = [
+            { name: 'Payment Required', status: 'completed', notes: 'Payment received' },
+            { name: 'Payment Received', status: 'completed', notes: 'Payment already completed' },
+            { name: 'Provider Assigned', status: 'pending', notes: 'Waiting for provider acceptance' },
+            { name: 'Service Started', status: 'pending' },
+            { name: 'Service Completed', status: 'pending' }
+          ];
+          await workflowClient.createWorkflowForBooking(bookingId, defaultSteps).catch(() => {});
+          
+          await workflowController.updateWorkflowStepByName(bookingId, 'Payment Required', 'completed', 'Payment received');
+          await workflowController.updateWorkflowStepByName(bookingId, 'Payment Received', 'completed', 'Payment already completed');
+          await workflowController.updateWorkflowStepByName(bookingId, 'Provider Assigned', 'pending', 'Waiting for provider acceptance');
+        } catch (workflowErr) {
+          console.error('Error updating workflows for existing paid payment:', workflowErr);
+        }
+        
+        // Return 200 with alreadyPaid flag so frontend can refresh bookings
+        return res.status(200).json({ 
           message: 'Payment already completed for this booking',
+          alreadyPaid: true,
           paymentId: existingPayment.id,
-          paymentStatus: existingPayment.status
+          paymentStatus: existingPayment.status,
+          clientSecret: null // No payment intent needed
         });
       }
       // If payment exists but is pending, check if it has a transactionId (Stripe PaymentIntent)
@@ -108,10 +145,34 @@ exports.createPaymentIntent = async (req, res) => {
                 commissionAmount: existingPayment.commissionAmount
               }
             });
-            return res.status(400).json({ 
+            
+            // Ensure workflows exist and are updated
+            try {
+              const workflowController = require('../controllers/serviceWorkflowController');
+              const workflowClient = require('../lib/workflowClient');
+              const defaultSteps = [
+                { name: 'Payment Required', status: 'completed', notes: 'Payment received' },
+                { name: 'Payment Received', status: 'completed', notes: 'Payment received (reconciled)' },
+                { name: 'Provider Assigned', status: 'pending', notes: 'Waiting for provider acceptance' },
+                { name: 'Service Started', status: 'pending' },
+                { name: 'Service Completed', status: 'pending' }
+              ];
+              await workflowClient.createWorkflowForBooking(bookingId, defaultSteps).catch(() => {});
+              
+              await workflowController.updateWorkflowStepByName(bookingId, 'Payment Required', 'completed', 'Payment received');
+              await workflowController.updateWorkflowStepByName(bookingId, 'Payment Received', 'completed', 'Payment received (reconciled)');
+              await workflowController.updateWorkflowStepByName(bookingId, 'Provider Assigned', 'pending', 'Waiting for provider acceptance');
+            } catch (workflowErr) {
+              console.error('Error updating workflows for reconciled payment:', workflowErr);
+            }
+            
+            // Return 200 with alreadyPaid flag so frontend can refresh bookings
+            return res.status(200).json({ 
               message: 'Payment already paid (reconciled)',
+              alreadyPaid: true,
               paymentId: existingPayment.id,
-              paymentStatus: 'paid'
+              paymentStatus: 'paid',
+              clientSecret: null
             });
           }
           // Return existing PaymentIntent clientSecret
@@ -131,7 +192,20 @@ exports.createPaymentIntent = async (req, res) => {
           console.warn('Existing payment transactionId invalid, creating new PaymentIntent:', stripeErr.message);
         }
       } else {
-        // Payment exists but no transactionId - return existing payment info
+        // Payment exists but no transactionId - ensure booking status is correct
+        const booking = await prisma.booking.findUnique({ where: { id: bookingId } });
+        if (booking && booking.paymentStatus !== 'pending') {
+          await prisma.booking.update({
+            where: { id: bookingId },
+            data: { 
+              paymentStatus: 'pending',
+              escrowAmount: existingPayment.amount,
+              commissionAmount: existingPayment.commissionAmount
+            }
+          });
+        }
+        
+        // Return existing payment info
         return res.status(400).json({ 
           message: 'Payment intent already exists for this booking',
           paymentId: existingPayment.id,
@@ -208,7 +282,10 @@ exports.createPaymentIntent = async (req, res) => {
       paymentIntent = await stripeClient.paymentIntents.create({
         amount: amountCents,
         currency: (currency || 'zar').toLowerCase(),
-        automatic_payment_methods: { enabled: true },
+        automatic_payment_methods: { 
+          enabled: true,
+          allow_redirects: 'never' // Prevent redirect-based payment methods (e.g., iDEAL, Klarna) that require return_url
+        },
         metadata: {
           bookingId,
           paymentId: payment.id,
@@ -457,9 +534,13 @@ exports.createPaymentIntent = async (req, res) => {
       configured: true
     });
     */
-  } catch (error) {
+  } catch (error: any) {
     console.error('createPaymentIntent error', error);
-    res.status(500).json({ message: 'Server error' });
+    const errorMessage = error?.message || 'Failed to create payment intent';
+    res.status(500).json({ 
+      message: 'Server error',
+      error: process.env.NODE_ENV === 'development' ? errorMessage : undefined
+    });
   }
 };
 
@@ -550,23 +631,101 @@ exports.createCheckoutSession = async (req, res) => {
       return res.status(400).json({ message: 'Customer profile not found' });
     }
 
-    // Create a pending payment record so webhook/confirmation can update it later
-    const referenceNumber = await generatePaymentReferenceAsync();
-    const payment = await prisma.payment.create({
-      data: {
-        referenceNumber,
-        customerId: customer.id,
-        bookingId,
-        amount: totalAmount,
-        currency: 'ZAR',
-        paymentMethod: 'stripe',
-        status: 'pending',
-        escrowStatus: 'held',
-        commissionRate,
-        commissionAmount,
-        tipAmount: 0
-      }
+    // Check if payment already exists for this booking
+    let payment = await prisma.payment.findUnique({
+      where: { bookingId }
     });
+
+    if (payment) {
+      // Payment already exists
+      if (payment.status === 'paid') {
+        // Payment is already paid - ensure booking status and workflows are updated
+        if (booking.paymentStatus !== 'paid_to_escrow') {
+          await prisma.booking.update({
+            where: { id: bookingId },
+            data: {
+              paymentStatus: 'paid_to_escrow',
+              status: booking.status === 'pending_payment' ? 'pending_acceptance' : booking.status,
+              escrowAmount: payment.amount,
+              commissionAmount: payment.commissionAmount || commissionAmount
+            }
+          });
+        }
+        
+        // Ensure workflows exist and are updated for paid payment
+        try {
+          const workflowController = require('../controllers/serviceWorkflowController');
+          // Ensure workflow exists first
+          const workflowClient = require('../lib/workflowClient');
+          const defaultSteps = [
+            { name: 'Payment Required', status: 'completed', notes: 'Payment received' },
+            { name: 'Payment Received', status: 'completed', notes: 'Payment already completed' },
+            { name: 'Provider Assigned', status: 'pending', notes: 'Waiting for provider acceptance' },
+            { name: 'Service Started', status: 'pending' },
+            { name: 'Service Completed', status: 'pending' }
+          ];
+          await workflowClient.createWorkflowForBooking(bookingId, defaultSteps).catch(() => {});
+          
+          // Update workflow steps
+          await workflowController.updateWorkflowStepByName(bookingId, 'Payment Required', 'completed', 'Payment received');
+          await workflowController.updateWorkflowStepByName(bookingId, 'Payment Received', 'completed', 'Payment already completed');
+          await workflowController.updateWorkflowStepByName(bookingId, 'Provider Assigned', 'pending', 'Waiting for provider acceptance');
+        } catch (workflowErr) {
+          console.error('Error updating workflows for existing paid payment:', workflowErr);
+        }
+        
+        // Return 200 with alreadyPaid flag so frontend can refresh bookings
+        return res.status(200).json({
+          message: 'Payment already completed for this booking',
+          alreadyPaid: true,
+          paymentId: payment.id,
+          paymentStatus: payment.status,
+          bookingStatus: booking.status,
+          checkoutUrl: null // No checkout needed
+        });
+      }
+      // If payment exists but is pending, reuse it (might be from a previous checkout attempt)
+      // Update payment amount in case booking price changed
+      payment = await prisma.payment.update({
+        where: { id: payment.id },
+        data: {
+          amount: totalAmount,
+          commissionAmount,
+          escrowStatus: 'held',
+          status: 'pending'
+        }
+      });
+      
+      // Ensure booking status is set to pending_payment or pending
+      if (booking.paymentStatus !== 'pending' && booking.status !== 'pending_payment') {
+        await prisma.booking.update({
+          where: { id: bookingId },
+          data: {
+            paymentStatus: 'pending',
+            escrowAmount,
+            commissionAmount
+          }
+        });
+      }
+    } else {
+      // Create a new pending payment record
+      const referenceNumber = await generatePaymentReferenceAsync();
+      payment = await prisma.payment.create({
+        data: {
+          referenceNumber,
+          customerId: customer.id,
+          bookingId,
+          amount: totalAmount,
+          currency: 'ZAR',
+          paymentMethod: 'stripe',
+          status: 'pending',
+          escrowStatus: 'held',
+          commissionRate,
+          commissionAmount,
+          tipAmount: 0
+        }
+      });
+    }
 
     // Build success / cancel URLs for Stripe Checkout
     const clientBaseUrl = process.env.CLIENT_URL || process.env.EXTERNAL_API_URL || 'https://spana.app';
@@ -607,21 +766,30 @@ exports.createCheckoutSession = async (req, res) => {
       cancel_url: cancelUrl
     });
 
-    // Store Checkout Session id on payment for debugging / reconciliation if needed
+    // Store PaymentIntent ID on payment (prefer payment_intent, fallback to session.id for reconciliation)
+    // Note: session.payment_intent might be null initially, but will be set after payment
+    // #region agent log
+    fetch('http://127.0.0.1:7745/ingest/e74cc868-61c8-46b1-9335-6d9fec3efef6',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'dad86d'},body:JSON.stringify({sessionId:'dad86d',runId:'checkout-create',hypothesisId:'A',location:'paymentController.ts:771',message:'Checkout session created - storing transactionId',data:{paymentId:payment.id,bookingId,sessionId:session.id,paymentIntentId:session.payment_intent,transactionIdToStore:session.payment_intent||session.id},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
     await prisma.payment.update({
       where: { id: payment.id },
-      data: { transactionId: session.payment_intent || session.id }
-    });
-
-    // Mark booking as awaiting payment completion
-    await prisma.booking.update({
-      where: { id: bookingId },
-      data: {
-        paymentStatus: 'pending',
-        escrowAmount,
-        commissionAmount
+      data: { 
+        transactionId: session.payment_intent || session.id,
+        // Store session ID separately if needed for reconciliation (can add sessionId field later if needed)
       }
     });
+
+    // Mark booking as awaiting payment completion (if not already updated above)
+    if (!payment || payment.status === 'pending') {
+      await prisma.booking.update({
+        where: { id: bookingId },
+        data: {
+          paymentStatus: 'pending',
+          escrowAmount,
+          commissionAmount
+        }
+      });
+    }
 
     // Frontend should redirect the user to this URL (window.location = checkoutUrl)
     return res.json({
@@ -637,9 +805,40 @@ exports.createCheckoutSession = async (req, res) => {
     console.error('createCheckoutSession error', error);
     const errMsg = error?.message || 'Unknown error';
     const isStripeConfig = !stripeClient || errMsg.toLowerCase().includes('stripe') || errMsg.includes('api key');
+    const isUniqueConstraint = errMsg.includes('Unique constraint') || errMsg.includes('bookingId');
+    
+    // Handle unique constraint error (payment already exists)
+    if (isUniqueConstraint) {
+      // Try to find existing payment and return it
+      try {
+        // Use bookingId from the original request body to avoid scope issues
+        const existingPayment = await prisma.payment.findUnique({
+          where: { bookingId: req.body.bookingId }
+        });
+        if (existingPayment) {
+          if (existingPayment.status === 'paid') {
+            return res.status(200).json({
+              message: 'Payment already completed for this booking',
+              alreadyPaid: true,
+              paymentId: existingPayment.id,
+              paymentStatus: existingPayment.status
+            });
+          }
+          // Payment exists but pending - return error with helpful message
+          return res.status(400).json({
+            message: 'Payment already exists for this booking. Please complete the existing payment or contact support.',
+            paymentId: existingPayment.id,
+            paymentStatus: existingPayment.status
+          });
+        }
+      } catch (lookupErr) {
+        console.error('Error looking up existing payment:', lookupErr);
+      }
+    }
+    
     return res.status(500).json({
       message: 'Failed to create Stripe Checkout session',
-      error: errMsg,
+      error: process.env.NODE_ENV === 'development' ? errMsg : undefined,
       ...(isStripeConfig && { hint: 'Check STRIPE_SECRET_KEY in server .env and that Stripe is configured for your account.' })
     });
   }
@@ -1049,32 +1248,193 @@ exports.confirmPayment = async (req, res) => {
     // Stripe confirm (preferred): verify PaymentIntent succeeded and update booking/payment.
     // This is important when webhooks aren't configured.
     // If sessionId is provided, retrieve PaymentIntent from Checkout Session
+    // Note: If both sessionId and paymentIntentId are provided, prefer sessionId (it's more reliable)
     let actualPaymentIntentId = paymentIntentId;
-    if (stripeClient && sessionId && !paymentIntentId) {
+    // If sessionId is provided (even if paymentIntentId is also set), use sessionId to get payment_intent
+    // This handles cases where frontend incorrectly sets paymentIntentId to sessionId
+    if (stripeClient && sessionId) {
+      // Only use paymentIntentId if it's actually a payment intent ID (starts with pi_)
+      // Otherwise, ignore it and get payment_intent from the session
+      if (paymentIntentId && !paymentIntentId.startsWith('pi_')) {
+        console.warn(`Invalid paymentIntentId provided (${paymentIntentId}), ignoring and using sessionId instead`);
+        actualPaymentIntentId = null; // Reset to null so we retrieve from session
+      }
       try {
-        const session = await stripeClient.checkout.sessions.retrieve(sessionId);
-        actualPaymentIntentId = session.payment_intent || session.payment_intent || null;
-        if (!actualPaymentIntentId) {
-          return res.status(400).json({ message: 'PaymentIntent not found in Checkout Session' });
+        // Check if sessionId is actually a Checkout Session ID (starts with cs_) or PaymentIntent ID (starts with pi_)
+        if (sessionId.startsWith('cs_')) {
+          // It's a Checkout Session ID - retrieve the PaymentIntent from it
+          console.log(`Retrieving Checkout Session: ${sessionId}`);
+          // #region agent log
+          fetch('http://127.0.0.1:7745/ingest/e74cc868-61c8-46b1-9335-6d9fec3efef6',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'dad86d'},body:JSON.stringify({sessionId:'dad86d',runId:'confirm-payment',hypothesisId:'A',location:'paymentController.ts:1251',message:'Retrieving checkout session to get payment_intent',data:{sessionId,bookingId},timestamp:Date.now()})}).catch(()=>{});
+          // #endregion
+          const session = await stripeClient.checkout.sessions.retrieve(sessionId, {
+            expand: ['payment_intent'] // Expand payment_intent to get full details
+          });
+          
+          console.log(`Checkout Session retrieved - payment_status: ${session.payment_status}, payment_intent: ${session.payment_intent}`);
+          // #region agent log
+          fetch('http://127.0.0.1:7745/ingest/e74cc868-61c8-46b1-9335-6d9fec3efef6',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'dad86d'},body:JSON.stringify({sessionId:'dad86d',runId:'confirm-payment',hypothesisId:'A',location:'paymentController.ts:1258',message:'Checkout session retrieved',data:{sessionId:session.id,paymentStatus:session.payment_status,paymentIntentType:typeof session.payment_intent,paymentIntentId:typeof session.payment_intent==='string'?session.payment_intent:session.payment_intent?.id||null},timestamp:Date.now()})}).catch(()=>{});
+          // #endregion
+          
+          // Checkout Session can have payment_intent as string ID or expanded object
+          if (typeof session.payment_intent === 'string') {
+            actualPaymentIntentId = session.payment_intent;
+          } else if (session.payment_intent && typeof session.payment_intent === 'object' && session.payment_intent.id) {
+            actualPaymentIntentId = session.payment_intent.id;
+          } else {
+            actualPaymentIntentId = null;
+          }
+          // #region agent log
+          fetch('http://127.0.0.1:7745/ingest/e74cc868-61c8-46b1-9335-6d9fec3efef6',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'dad86d'},body:JSON.stringify({sessionId:'dad86d',runId:'confirm-payment',hypothesisId:'A',location:'paymentController.ts:1267',message:'Extracted payment_intent ID from session',data:{actualPaymentIntentId,hasPaymentIntent:!!actualPaymentIntentId},timestamp:Date.now()})}).catch(()=>{});
+          // #endregion
+          
+          if (!actualPaymentIntentId) {
+          // Payment intent might be null initially, but will be set after payment completes
+          // If payment_status is 'paid', try to retrieve payment_intent again (it should be set now)
+          if (session.payment_status === 'paid') {
+            // Payment completed - payment_intent should be available now
+            // Try retrieving session again with expand to get payment_intent details
+            try {
+              const refreshedSession = await stripeClient.checkout.sessions.retrieve(sessionId, {
+                expand: ['payment_intent']
+              });
+              console.log(`[confirmPayment] Refreshed session after payment - payment_status: ${refreshedSession.payment_status}, payment_intent: ${refreshedSession.payment_intent ? (typeof refreshedSession.payment_intent === 'string' ? refreshedSession.payment_intent : refreshedSession.payment_intent.id) : 'null'}`);
+              
+              if (refreshedSession.payment_intent) {
+                actualPaymentIntentId = typeof refreshedSession.payment_intent === 'string' 
+                  ? refreshedSession.payment_intent 
+                  : refreshedSession.payment_intent.id;
+                console.log(`[confirmPayment] Extracted payment_intent ID from refreshed session: ${actualPaymentIntentId}`);
+              }
+            } catch (refreshErr: any) {
+              console.warn('[confirmPayment] Failed to refresh session to get payment_intent:', refreshErr?.message);
+            }
+              
+              // If still no payment_intent, check if payment was already processed via webhook
+              if (!actualPaymentIntentId) {
+                const payment = await prisma.payment.findFirst({
+                  where: { 
+                    bookingId,
+                    OR: [
+                      { transactionId: sessionId },
+                      { transactionId: { contains: sessionId } }
+                    ]
+                  },
+                  orderBy: { createdAt: 'desc' }
+                });
+                
+                if (payment && payment.status === 'paid') {
+                  // Payment already processed - just return success
+                  return res.json({ 
+                    message: 'Payment already confirmed',
+                    payment,
+                    booking: { id: bookingId, paymentStatus: 'paid_to_escrow' }
+                  });
+                }
+              }
+            }
+            
+            // If still no payment_intent and payment_status is not 'paid', payment hasn't completed yet
+            if (!actualPaymentIntentId) {
+              return res.status(400).json({ 
+                message: 'PaymentIntent not found in Checkout Session. Payment may still be processing.',
+                sessionId,
+                paymentStatus: session.payment_status,
+                hint: 'Wait a moment and try again, or check webhook delivery status'
+              });
+            }
+          }
+        } else if (sessionId.startsWith('pi_')) {
+          // It's actually a PaymentIntent ID, use it directly
+          actualPaymentIntentId = sessionId;
+        } else {
+          // Unknown format - try to retrieve as Checkout Session first
+          try {
+            const session = await stripeClient.checkout.sessions.retrieve(sessionId);
+            actualPaymentIntentId = typeof session.payment_intent === 'string' 
+              ? session.payment_intent 
+              : (session.payment_intent?.id || null);
+          } catch {
+            // If that fails, assume it's a PaymentIntent ID
+            actualPaymentIntentId = sessionId;
+          }
         }
       } catch (sessionErr: any) {
         console.error('Error retrieving Checkout Session:', sessionErr);
-        return res.status(400).json({ message: 'Invalid Checkout Session', error: sessionErr?.message });
+        // If session retrieval fails, check if it might be a PaymentIntent ID
+        if (sessionId.startsWith('pi_')) {
+          actualPaymentIntentId = sessionId;
+        } else {
+          return res.status(400).json({ 
+            message: 'Invalid Checkout Session or PaymentIntent ID', 
+            error: sessionErr?.message,
+            providedId: sessionId
+          });
+        }
       }
     }
 
     if (stripeClient && actualPaymentIntentId) {
       try {
+        // Ensure we have a valid PaymentIntent ID (starts with pi_)
+        if (!actualPaymentIntentId.startsWith('pi_')) {
+          return res.status(400).json({ 
+            message: 'Invalid PaymentIntent ID format',
+            providedId: actualPaymentIntentId,
+            hint: 'If using Checkout Session, ensure session.payment_intent is retrieved correctly'
+          });
+        }
+        
+        // #region agent log
+        fetch('http://127.0.0.1:7745/ingest/e74cc868-61c8-46b1-9335-6d9fec3efef6',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'dad86d'},body:JSON.stringify({sessionId:'dad86d',runId:'confirm-payment',hypothesisId:'B',location:'paymentController.ts:1342',message:'Retrieving payment intent to check status',data:{actualPaymentIntentId,bookingId},timestamp:Date.now()})}).catch(()=>{});
+        // #endregion
         const pi = await stripeClient.paymentIntents.retrieve(actualPaymentIntentId);
         if (!pi) {
           return res.status(404).json({ message: 'PaymentIntent not found' });
         }
+        // #region agent log
+        fetch('http://127.0.0.1:7745/ingest/e74cc868-61c8-46b1-9335-6d9fec3efef6',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'dad86d'},body:JSON.stringify({sessionId:'dad86d',runId:'confirm-payment',hypothesisId:'B',location:'paymentController.ts:1345',message:'Payment intent retrieved',data:{paymentIntentId:pi.id,status:pi.status,amount:pi.amount,metadata:pi.metadata},timestamp:Date.now()})}).catch(()=>{});
+        // #endregion
         
+        // Handle different payment intent statuses
         if (pi.status !== 'succeeded') {
-          return res.status(400).json({ 
-            message: 'Payment not successful yet', 
+          // #region agent log
+          fetch('http://127.0.0.1:7745/ingest/e74cc868-61c8-46b1-9335-6d9fec3efef6',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'dad86d'},body:JSON.stringify({sessionId:'dad86d',runId:'confirm-payment',hypothesisId:'B',location:'paymentController.ts:1348',message:'Payment intent not succeeded yet',data:{status:pi.status,paymentIntentId:pi.id},timestamp:Date.now()})}).catch(()=>{});
+          // #endregion
+          let errorMessage = 'Payment not successful yet';
+          let statusCode = 400;
+          
+          // Provide more specific error messages based on status
+          switch (pi.status) {
+            case 'requires_payment_method':
+              errorMessage = 'Payment method required. Please complete the payment first.';
+              statusCode = 402; // Payment Required
+              break;
+            case 'requires_confirmation':
+              errorMessage = 'Payment requires confirmation. Please complete the payment process.';
+              break;
+            case 'requires_action':
+              errorMessage = 'Payment requires additional action (e.g., 3D Secure). Please complete authentication.';
+              break;
+            case 'processing':
+              errorMessage = 'Payment is being processed. Please wait a moment and try again.';
+              break;
+            case 'requires_capture':
+              errorMessage = 'Payment requires capture. This should be handled automatically.';
+              break;
+            case 'canceled':
+              errorMessage = 'Payment was canceled. Please create a new payment.';
+              break;
+            default:
+              errorMessage = `Payment status: ${pi.status}. Payment has not succeeded yet.`;
+          }
+          
+          return res.status(statusCode).json({ 
+            message: errorMessage,
             status: pi.status,
-            paymentIntentId: pi.id
+            paymentIntentId: pi.id,
+            clientSecret: pi.client_secret, // Include client secret so frontend can retry if needed
+            requiresAction: pi.status === 'requires_action' || pi.status === 'requires_confirmation'
           });
         }
 
@@ -1236,9 +1596,19 @@ exports.confirmPayment = async (req, res) => {
           }
         } catch (_) {}
 
-        // Update workflow: Payment Required, Payment Received, Provider Assigned (same as webhook/fallback)
+        // Ensure workflows exist and update: Payment Required, Payment Received, Provider Assigned
         try {
           const workflowController = require('../controllers/serviceWorkflowController');
+          const workflowClient = require('../lib/workflowClient');
+          const defaultSteps = [
+            { name: 'Payment Required', status: 'completed', notes: 'Payment received' },
+            { name: 'Payment Received', status: 'completed', notes: 'Payment received (Stripe confirm)' },
+            { name: 'Provider Assigned', status: 'pending', notes: 'Waiting for provider acceptance' },
+            { name: 'Service Started', status: 'pending' },
+            { name: 'Service Completed', status: 'pending' }
+          ];
+          await workflowClient.createWorkflowForBooking(bookingId, defaultSteps).catch(() => {});
+          
           await workflowController.updateWorkflowStepByName(bookingId, 'Payment Required', 'completed', 'Payment received');
           await workflowController.updateWorkflowStepByName(bookingId, 'Payment Received', 'completed', 'Payment received (Stripe confirm)');
           await workflowController.updateWorkflowStepByName(bookingId, 'Provider Assigned', 'pending', 'Waiting for provider acceptance');
@@ -1339,9 +1709,19 @@ exports.confirmPayment = async (req, res) => {
       }
     } catch (_) {}
 
-    // Update workflow: Payment Required and Payment Received
+    // Ensure workflows exist and update: Payment Required, Payment Received, Provider Assigned
     try {
       const workflowController = require('../controllers/serviceWorkflowController');
+      const workflowClient = require('../lib/workflowClient');
+      const defaultSteps = [
+        { name: 'Payment Required', status: 'completed', notes: 'Payment received' },
+        { name: 'Payment Received', status: 'completed', notes: 'Payment confirmed and held in escrow' },
+        { name: 'Provider Assigned', status: 'pending', notes: 'Waiting for provider acceptance' },
+        { name: 'Service Started', status: 'pending' },
+        { name: 'Service Completed', status: 'pending' }
+      ];
+      await workflowClient.createWorkflowForBooking(bookingId, defaultSteps).catch(() => {});
+      
       await workflowController.updateWorkflowStepByName(bookingId, 'Payment Required', 'completed', 'Payment received');
       await workflowController.updateWorkflowStepByName(bookingId, 'Payment Received', 'completed', 'Payment confirmed and held in escrow');
       await workflowController.updateWorkflowStepByName(bookingId, 'Provider Assigned', 'pending', 'Waiting for provider acceptance');
@@ -1657,6 +2037,16 @@ exports.webhookHandler = async (req: any, res: any) => {
 
       try {
         const workflowController = require('../controllers/serviceWorkflowController');
+        const workflowClient = require('../lib/workflowClient');
+        const defaultSteps = [
+          { name: 'Payment Required', status: 'completed', notes: 'Payment received' },
+          { name: 'Payment Received', status: 'completed', notes: 'Payment received (Stripe)' },
+          { name: 'Provider Assigned', status: 'pending', notes: 'Waiting for provider acceptance' },
+          { name: 'Service Started', status: 'pending' },
+          { name: 'Service Completed', status: 'pending' }
+        ];
+        await workflowClient.createWorkflowForBooking(bookingId, defaultSteps).catch(() => {});
+        
         await workflowController.updateWorkflowStepByName(bookingId, 'Payment Required', 'completed', 'Payment received');
         await workflowController.updateWorkflowStepByName(bookingId, 'Payment Received', 'completed', 'Payment received (Stripe)');
         await workflowController.updateWorkflowStepByName(bookingId, 'Provider Assigned', 'pending', 'Waiting for provider acceptance');

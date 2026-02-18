@@ -1071,6 +1071,21 @@ exports.getUserBookings = async (req: any, res: any) => {
         }
       });
       
+      // Sync booking.paymentStatus with payment.status if payment exists
+      // This ensures consistency even if booking wasn't updated properly
+      for (const booking of bookings) {
+        if (booking.payment && booking.payment.status && booking.payment.status !== booking.paymentStatus) {
+          // Payment status differs from booking status - sync it
+          await prisma.booking.update({
+            where: { id: booking.id },
+            data: { 
+              paymentStatus: booking.payment.status === 'paid' ? 'paid_to_escrow' : booking.payment.status
+            }
+          });
+          booking.paymentStatus = booking.payment.status === 'paid' ? 'paid_to_escrow' : booking.payment.status;
+        }
+      }
+      
       // For customers: Only show provider details if booking is accepted (Uber-style)
       bookings = bookings.map((booking: any) => {
         if (booking.requestStatus !== 'accepted' && booking.service?.provider) {
