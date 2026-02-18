@@ -126,9 +126,18 @@ export async function generateBookingReferenceAsync(): Promise<string> {
 }
 
 export async function generatePaymentReferenceAsync(): Promise<string> {
-  const counter = await getNextSequence('payment');
-  const padded = String(counter).padStart(6, '0');
-  return `SPANA-PY-${padded}`;
+  try {
+    const counter = await getNextSequence('payment');
+    const padded = String(counter).padStart(6, '0');
+    return `SPANA-PY-${padded}`;
+  } catch (error: any) {
+    // Fallback: Use timestamp + random to ensure uniqueness
+    console.warn('[generatePaymentReferenceAsync] Sequence failed, using timestamp fallback:', error.message);
+    const timestamp = Date.now();
+    const random = Math.floor(Math.random() * 1000);
+    const fallback = String(timestamp).slice(-8) + String(random).padStart(3, '0');
+    return `SPANA-PY-${fallback}`;
+  }
 }
 
 export async function generateUserReferenceAsync(): Promise<string> {

@@ -708,23 +708,68 @@ exports.createCheckoutSession = async (req, res) => {
         });
       }
     } else {
-      // Create a new pending payment record
-      const referenceNumber = await generatePaymentReferenceAsync();
-      payment = await prisma.payment.create({
-        data: {
-          referenceNumber,
-          customerId: customer.id,
-          bookingId,
-          amount: totalAmount,
-          currency: 'ZAR',
-          paymentMethod: 'stripe',
-          status: 'pending',
-          escrowStatus: 'held',
-          commissionRate,
-          commissionAmount,
-          tipAmount: 0
+      // Create a new pending payment record with retry logic for referenceNumber collisions
+      const maxAttempts = 5;
+      let createdPayment: typeof payment | null = null;
+
+      for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        const referenceNumber = await generatePaymentReferenceAsync();
+
+        try {
+          createdPayment = await prisma.payment.create({
+            data: {
+              referenceNumber,
+              customerId: customer.id,
+              bookingId,
+              amount: totalAmount,
+              currency: 'ZAR',
+              paymentMethod: 'stripe',
+              status: 'pending',
+              escrowStatus: 'held',
+              commissionRate,
+              commissionAmount,
+              tipAmount: 0
+            }
+          });
+
+          payment = createdPayment;
+          break;
+        } catch (err: any) {
+          const code = err?.code;
+          const target = err?.meta?.target;
+          const targetArray = Array.isArray(target) ? target : target ? [target] : [];
+          const isReferenceNumberCollision =
+            code === 'P2002' && targetArray.includes('referenceNumber');
+
+          if (isReferenceNumberCollision) {
+            console.warn(
+              `[createCheckoutSession] Payment reference collision (${referenceNumber}), retrying... attempt ${
+                attempt + 1
+              }/${maxAttempts}`
+            );
+            createdPayment = null;
+            if (attempt < maxAttempts - 1) {
+              await new Promise((resolve) => setTimeout(resolve, 100));
+            }
+            continue;
+          }
+
+          console.error(
+            `[createCheckoutSession] Error creating payment (attempt ${attempt + 1}/${maxAttempts}):`,
+            err
+          );
+          throw err;
         }
-      });
+      }
+
+      if (!payment) {
+        console.error('[createCheckoutSession] Failed to generate unique payment reference after retries');
+        return res.status(500).json({
+          message: 'Could not generate unique payment reference. Please try again.',
+          error: 'payment_reference_collision',
+          retry: true
+        });
+      }
     }
 
     // Build success / cancel URLs for Stripe Checkout
@@ -804,42 +849,64 @@ exports.createCheckoutSession = async (req, res) => {
   } catch (error: any) {
     console.error('createCheckoutSession error', error);
     const errMsg = error?.message || 'Unknown error';
-    const isStripeConfig = !stripeClient || errMsg.toLowerCase().includes('stripe') || errMsg.includes('api key');
-    const isUniqueConstraint = errMsg.includes('Unique constraint') || errMsg.includes('bookingId');
-    
-    // Handle unique constraint error (payment already exists)
-    if (isUniqueConstraint) {
+    const isStripeConfig =
+      !stripeClient || errMsg.toLowerCase().includes('stripe') || errMsg.includes('api key');
+
+    const code = error?.code;
+    const target = error?.meta?.target;
+    const targetArray = Array.isArray(target) ? target : target ? [target] : [];
+    const isReferenceNumberCollision = code === 'P2002' && targetArray.includes('referenceNumber');
+    const isBookingUniqueCollision = code === 'P2002' && targetArray.includes('bookingId');
+    const isGenericUniqueConstraint =
+      errMsg.includes('Unique constraint') || errMsg.toLowerCase().includes('p2002');
+
+    // Handle referenceNumber unique constraint specifically (should be rare after retry logic)
+    if (isReferenceNumberCollision) {
+      return res.status(500).json({
+        message: 'Could not generate unique payment reference. Please try again.',
+        error: 'payment_reference_collision',
+        retry: true
+      });
+    }
+
+    // Handle unique constraint error on bookingId (payment already exists for this booking)
+    if (isBookingUniqueCollision || isGenericUniqueConstraint) {
       // Try to find existing payment and return it
       try {
-        // Use bookingId from the original request body to avoid scope issues
-        const existingPayment = await prisma.payment.findUnique({
-          where: { bookingId: req.body.bookingId }
-        });
-        if (existingPayment) {
-          if (existingPayment.status === 'paid') {
-            return res.status(200).json({
-              message: 'Payment already completed for this booking',
-              alreadyPaid: true,
+        const bookingIdFromBody = req.body?.bookingId;
+        if (bookingIdFromBody) {
+          const existingPayment = await prisma.payment.findUnique({
+            where: { bookingId: bookingIdFromBody }
+          });
+          if (existingPayment) {
+            if (existingPayment.status === 'paid') {
+              return res.status(200).json({
+                message: 'Payment already completed for this booking',
+                alreadyPaid: true,
+                paymentId: existingPayment.id,
+                paymentStatus: existingPayment.status
+              });
+            }
+            // Payment exists but pending - return error with helpful message
+            return res.status(400).json({
+              message:
+                'Payment already exists for this booking. Please complete the existing payment or contact support.',
               paymentId: existingPayment.id,
               paymentStatus: existingPayment.status
             });
           }
-          // Payment exists but pending - return error with helpful message
-          return res.status(400).json({
-            message: 'Payment already exists for this booking. Please complete the existing payment or contact support.',
-            paymentId: existingPayment.id,
-            paymentStatus: existingPayment.status
-          });
         }
       } catch (lookupErr) {
         console.error('Error looking up existing payment:', lookupErr);
       }
     }
-    
+
     return res.status(500).json({
       message: 'Failed to create Stripe Checkout session',
       error: process.env.NODE_ENV === 'development' ? errMsg : undefined,
-      ...(isStripeConfig && { hint: 'Check STRIPE_SECRET_KEY in server .env and that Stripe is configured for your account.' })
+      ...(isStripeConfig && {
+        hint: 'Check STRIPE_SECRET_KEY in server .env and that Stripe is configured for your account.'
+      })
     });
   }
 };
