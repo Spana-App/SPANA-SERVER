@@ -1117,9 +1117,15 @@ exports.getUserBookings = async (req: any, res: any) => {
             include: {
               user: true
             }
-          }
+          },
+          payment: true // Include payment info so provider can see payment status
+        },
+        orderBy: {
+          createdAt: 'desc' // Most recent bookings first
         }
       });
+      
+      console.log(`[getUserBookings] Found ${bookings.length} bookings for provider ${serviceProvider.id} (services: ${serviceIds.length})`);
     } else {
       // Admin can see all bookings
       bookings = await prisma.booking.findMany({

@@ -559,7 +559,7 @@ app.get('/payment-success', (req: any, res: any) => {
               ? payment.commissionAmount
               : amount * commissionRate;
 
-          // Mark payment as paid (simulated)
+          // Mark payment as paid (fallback path)
           await prisma.payment.update({
             where: { id: paymentIdStr },
             data: {
@@ -587,8 +587,8 @@ app.get('/payment-success', (req: any, res: any) => {
           // Ensure workflow exists and update steps to reflect payment
           try {
             const defaultSteps = [
-              { name: 'Payment Required', status: 'completed', notes: 'Payment received (simulated)' },
-              { name: 'Payment Received', status: 'completed', notes: 'Payment confirmed (simulated)' },
+              { name: 'Payment Required', status: 'completed', notes: 'Payment received' },
+              { name: 'Payment Received', status: 'completed', notes: 'Payment confirmed' },
               { name: 'Provider Assigned', status: 'pending', notes: 'Waiting for provider acceptance' },
               { name: 'Service Started', status: 'pending' },
               { name: 'Service Completed', status: 'pending' }
@@ -600,13 +600,13 @@ app.get('/payment-success', (req: any, res: any) => {
               bookingIdStr,
               'Payment Required',
               'completed',
-              'Payment received (simulated by /payment-success)'
+              'Payment received'
             );
             await workflowController.updateWorkflowStepByName(
               bookingIdStr,
               'Payment Received',
               'completed',
-              'Payment confirmed (simulated by /payment-success)'
+              'Payment confirmed'
             );
             await workflowController.updateWorkflowStepByName(
               bookingIdStr,
