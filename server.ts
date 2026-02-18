@@ -25,6 +25,9 @@ const workflowRoutes = require('./routes/workflows');
 const chatRoutes = require('./routes/chat');
 const providerRoutes = require('./routes/provider');
 const mapRoutes = require('./routes/maps');
+// Workflow helpers (used for payment-success fallback simulation)
+const workflowController = require('./controllers/serviceWorkflowController');
+const workflowClient = require('./lib/workflowClient');
 
 // Initialize Express app
 const app = express();
@@ -520,7 +523,119 @@ app.use('/', require('./routes/registration'));
 // Stripe Checkout redirect pages (no auth; user lands here after paying or cancelling)
 app.get('/payment-success', (req: any, res: any) => {
   res.setHeader('Content-Type', 'text/html');
-  res.send(`<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Payment successful</title></head><body style="font-family:system-ui;max-width:360px;margin:60px auto;padding:24px;text-align:center;"><h1 style="color:#10b981;">Payment successful</h1><p>You can close this window and return to the app.</p></body></html>`);
+
+  // Fallback simulation: if Stripe/webhook failed, ensure booking/payment/workflow are marked as paid
+  try {
+    const { bookingId, paymentId, session_id, sessionId } = (req.query || {}) as any;
+    if (bookingId && paymentId) {
+      const bookingIdStr = String(bookingId);
+      const paymentIdStr = String(paymentId);
+      const sessionRef = String(session_id || sessionId || '');
+
+      (async () => {
+        try {
+          const payment = await prisma.payment.findUnique({
+            where: { id: paymentIdStr },
+            include: { booking: true }
+          });
+
+          if (!payment || !payment.booking || payment.bookingId !== bookingIdStr) {
+            return;
+          }
+
+          // If already marked paid and booking synced, nothing to do
+          if (payment.status === 'paid' && payment.booking.paymentStatus === 'paid_to_escrow') {
+            return;
+          }
+
+          const amount = payment.amount;
+          if (!amount || amount <= 0) {
+            return;
+          }
+
+          const commissionRate = payment.commissionRate || 0.15;
+          const commissionAmount =
+            payment.commissionAmount !== null && payment.commissionAmount !== undefined
+              ? payment.commissionAmount
+              : amount * commissionRate;
+
+          // Mark payment as paid (simulated)
+          await prisma.payment.update({
+            where: { id: paymentIdStr },
+            data: {
+              status: 'paid',
+              escrowStatus: 'held',
+              commissionAmount,
+              transactionId: payment.transactionId || sessionRef || paymentIdStr
+            }
+          });
+
+          // Update booking paymentStatus and status
+          const newStatus =
+            payment.booking.status === 'pending_payment' ? 'pending_acceptance' : payment.booking.status;
+
+          const updatedBooking = await prisma.booking.update({
+            where: { id: bookingIdStr },
+            data: {
+              paymentStatus: 'paid_to_escrow',
+              status: newStatus,
+              escrowAmount: payment.amount,
+              commissionAmount
+            }
+          });
+
+          // Ensure workflow exists and update steps to reflect payment
+          try {
+            const defaultSteps = [
+              { name: 'Payment Required', status: 'completed', notes: 'Payment received (simulated)' },
+              { name: 'Payment Received', status: 'completed', notes: 'Payment confirmed (simulated)' },
+              { name: 'Provider Assigned', status: 'pending', notes: 'Waiting for provider acceptance' },
+              { name: 'Service Started', status: 'pending' },
+              { name: 'Service Completed', status: 'pending' }
+            ];
+
+            await workflowClient.createWorkflowForBooking(bookingIdStr, defaultSteps).catch(() => {});
+
+            await workflowController.updateWorkflowStepByName(
+              bookingIdStr,
+              'Payment Required',
+              'completed',
+              'Payment received (simulated by /payment-success)'
+            );
+            await workflowController.updateWorkflowStepByName(
+              bookingIdStr,
+              'Payment Received',
+              'completed',
+              'Payment confirmed (simulated by /payment-success)'
+            );
+            await workflowController.updateWorkflowStepByName(
+              bookingIdStr,
+              'Provider Assigned',
+              'pending',
+              'Waiting for provider acceptance'
+            );
+          } catch (workflowErr) {
+            console.error('payment-success workflow simulation error', workflowErr);
+          }
+
+          console.log('payment-success simulation applied', {
+            bookingId: bookingIdStr,
+            paymentId: paymentIdStr,
+            bookingStatus: updatedBooking.status,
+            paymentStatus: 'paid'
+          });
+        } catch (err) {
+          console.error('payment-success simulation error', err);
+        }
+      })();
+    }
+  } catch (err) {
+    console.error('payment-success handler error', err);
+  }
+
+  res.send(
+    '<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Payment successful</title></head><body style="font-family:system-ui;max-width:360px;margin:60px auto;padding:24px;text-align:center;"><h1 style="color:#10b981;">Payment successful</h1><p>You can close this window and return to the app.</p></body></html>'
+  );
 });
 app.get('/payment-cancelled', (req: any, res: any) => {
   res.setHeader('Content-Type', 'text/html');

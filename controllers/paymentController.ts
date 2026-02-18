@@ -1289,58 +1289,67 @@ exports.confirmPayment = async (req, res) => {
           // #endregion
           
           if (!actualPaymentIntentId) {
-          // Payment intent might be null initially, but will be set after payment completes
-          // If payment_status is 'paid', try to retrieve payment_intent again (it should be set now)
-          if (session.payment_status === 'paid') {
-            // Payment completed - payment_intent should be available now
-            // Try retrieving session again with expand to get payment_intent details
-            try {
-              const refreshedSession = await stripeClient.checkout.sessions.retrieve(sessionId, {
-                expand: ['payment_intent']
-              });
-              console.log(`[confirmPayment] Refreshed session after payment - payment_status: ${refreshedSession.payment_status}, payment_intent: ${refreshedSession.payment_intent ? (typeof refreshedSession.payment_intent === 'string' ? refreshedSession.payment_intent : refreshedSession.payment_intent.id) : 'null'}`);
-              
-              if (refreshedSession.payment_intent) {
-                actualPaymentIntentId = typeof refreshedSession.payment_intent === 'string' 
-                  ? refreshedSession.payment_intent 
-                  : refreshedSession.payment_intent.id;
-                console.log(`[confirmPayment] Extracted payment_intent ID from refreshed session: ${actualPaymentIntentId}`);
-              }
-            } catch (refreshErr: any) {
-              console.warn('[confirmPayment] Failed to refresh session to get payment_intent:', refreshErr?.message);
-            }
-              
-              // If still no payment_intent, check if payment was already processed via webhook
-              if (!actualPaymentIntentId) {
-                const payment = await prisma.payment.findFirst({
-                  where: { 
-                    bookingId,
-                    OR: [
-                      { transactionId: sessionId },
-                      { transactionId: { contains: sessionId } }
-                    ]
-                  },
-                  orderBy: { createdAt: 'desc' }
+            // Payment intent might be null initially, but will be set after payment completes
+            // If payment_status is 'paid', try to retrieve payment_intent again (it should be set now)
+            if (session.payment_status === 'paid') {
+              // Payment completed - payment_intent should be available now
+              // Try retrieving session again with expand to get payment_intent details
+              try {
+                const refreshedSession = await stripeClient.checkout.sessions.retrieve(sessionId, {
+                  expand: ['payment_intent']
                 });
+                console.log(`[confirmPayment] Refreshed session after payment - payment_status: ${refreshedSession.payment_status}, payment_intent: ${refreshedSession.payment_intent ? (typeof refreshedSession.payment_intent === 'string' ? refreshedSession.payment_intent : refreshedSession.payment_intent.id) : 'null'}`);
                 
-                if (payment && payment.status === 'paid') {
-                  // Payment already processed - just return success
-                  return res.json({ 
-                    message: 'Payment already confirmed',
-                    payment,
-                    booking: { id: bookingId, paymentStatus: 'paid_to_escrow' }
-                  });
+                if (refreshedSession.payment_intent) {
+                  actualPaymentIntentId = typeof refreshedSession.payment_intent === 'string' 
+                    ? refreshedSession.payment_intent 
+                    : refreshedSession.payment_intent.id;
+                  console.log(`[confirmPayment] Extracted payment_intent ID from refreshed session: ${actualPaymentIntentId}`);
                 }
+              } catch (refreshErr: any) {
+                console.warn('[confirmPayment] Failed to refresh session to get payment_intent:', refreshErr?.message);
               }
             }
             
-            // If still no payment_intent and payment_status is not 'paid', payment hasn't completed yet
+            // If still no payment_intent, check if payment was already processed via webhook
             if (!actualPaymentIntentId) {
+              const existingPayment = await prisma.payment.findFirst({
+                where: { 
+                  bookingId,
+                  OR: [
+                    { transactionId: sessionId },
+                    { transactionId: { contains: sessionId } }
+                  ]
+                },
+                orderBy: { createdAt: 'desc' }
+              });
+              
+              // If payment record shows paid, return success (webhook already processed it)
+              if (existingPayment && existingPayment.status === 'paid') {
+                const booking = await prisma.booking.findUnique({
+                  where: { id: bookingId },
+                  select: { paymentStatus: true, status: true }
+                });
+                return res.json({ 
+                  message: 'Payment already confirmed via webhook',
+                  payment: existingPayment,
+                  booking: { id: bookingId, paymentStatus: booking?.paymentStatus, status: booking?.status }
+                });
+              }
+              
+              // Payment hasn't completed yet - return helpful message based on status
+              const isUnpaid = session.payment_status === 'unpaid';
               return res.status(400).json({ 
-                message: 'PaymentIntent not found in Checkout Session. Payment may still be processing.',
+                message: isUnpaid
+                  ? 'Payment has not been completed. Please complete the payment in Stripe Checkout.'
+                  : 'Payment may still be processing. Please wait a moment and try again.',
                 sessionId,
                 paymentStatus: session.payment_status,
-                hint: 'Wait a moment and try again, or check webhook delivery status'
+                sessionStatus: session.status,
+                requiresAction: isUnpaid,
+                hint: isUnpaid
+                  ? 'Return to Stripe Checkout to complete payment. The webhook will automatically process it when payment completes.'
+                  : 'Wait a moment and refresh, or check webhook delivery status. Payment will be processed automatically.'
               });
             }
           }
