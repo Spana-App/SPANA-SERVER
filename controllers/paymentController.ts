@@ -582,12 +582,24 @@ exports.createCheckoutSession = async (req, res) => {
       return res.status(403).json({ message: 'Not authorized to pay for this booking' });
     }
 
-    // Prevent duplicate paid bookings
+    // Prevent duplicate paid bookings - treat as alreadyPaid instead of error
     if (booking.paymentStatus === 'paid_to_escrow') {
-      return res.status(400).json({
-        message: 'Payment already completed',
+      // Try to find existing payment record, but don't fail if missing
+      let existingPayment: any = null;
+      try {
+        existingPayment = await prisma.payment.findFirst({
+          where: { bookingId },
+          orderBy: { createdAt: 'desc' }
+        });
+      } catch (_) {}
+
+      return res.status(200).json({
+        message: 'Payment already completed for this booking',
+        alreadyPaid: true,
         paymentStatus: booking.paymentStatus,
-        bookingStatus: booking.status
+        bookingStatus: booking.status,
+        paymentId: existingPayment?.id || null,
+        checkoutUrl: null
       });
     }
 
