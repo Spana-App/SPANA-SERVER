@@ -2,30 +2,28 @@ import prisma from '../lib/database';
 
 exports.createWorkflowForBooking = async (bookingId: any, steps: any[]) => {
   try {
-    // Get the booking to find the actual serviceId
     const booking = await prisma.booking.findUnique({
       where: { id: bookingId },
       select: { serviceId: true }
     });
-    
     if (!booking) {
       throw new Error(`Booking ${bookingId} not found`);
     }
-    
-    // Use the actual serviceId from the booking
-    const existing = await prisma.serviceWorkflow.findFirst({ 
-      where: { serviceId: booking.serviceId } 
+    // One workflow per booking: create new with bookingId (do not reuse by serviceId)
+    const existingForBooking = await prisma.serviceWorkflow.findUnique({
+      where: { bookingId }
     });
-    if (existing) return existing;
-    
-    const wf = await prisma.serviceWorkflow.create({ 
-      data: { 
-        serviceId: booking.serviceId, 
+    if (existingForBooking) return existingForBooking;
+
+    const wf = await prisma.serviceWorkflow.create({
+      data: {
+        serviceId: booking.serviceId,
+        bookingId,
         name: 'Booking Workflow',
         description: 'Default workflow for booking',
         steps: steps,
         isActive: true
-      } 
+      }
     });
     return wf;
   } catch (e) {
@@ -37,22 +35,23 @@ exports.createWorkflowForBooking = async (bookingId: any, steps: any[]) => {
 exports.getWorkflow = async (req, res) => {
   try {
     const bookingId = req.params.bookingId;
-    // Get the booking to find the actual serviceId
     const booking = await prisma.booking.findUnique({
       where: { id: bookingId },
       select: { serviceId: true }
     });
-    
     if (!booking) {
       return res.status(404).json({ message: 'Booking not found' });
     }
-    
-    // Find workflow by the actual serviceId
-    const wf = await prisma.serviceWorkflow.findFirst({ 
-      where: { serviceId: booking.serviceId } 
+    // Prefer workflow tied to this booking; fallback to service-level workflow
+    let wf = await prisma.serviceWorkflow.findUnique({
+      where: { bookingId }
     });
     if (!wf) {
-      // Workflow might not exist yet - that's okay
+      wf = await prisma.serviceWorkflow.findFirst({
+        where: { serviceId: booking.serviceId, bookingId: null }
+      });
+    }
+    if (!wf) {
       return res.status(404).json({ message: 'Workflow not found' });
     }
     res.json(wf);
@@ -66,20 +65,20 @@ exports.updateStep = async (req, res) => {
   try {
     const { bookingId, stepIndex } = req.params;
     const { status, notes, assignee } = req.body;
-    
-    // Get the booking to find the actual serviceId
+
     const booking = await prisma.booking.findUnique({
       where: { id: bookingId },
       select: { serviceId: true }
     });
-    
     if (!booking) {
       return res.status(404).json({ message: 'Booking not found' });
     }
-    
-    const wf = await prisma.serviceWorkflow.findFirst({ 
-      where: { serviceId: booking.serviceId } 
-    });
+    let wf = await prisma.serviceWorkflow.findUnique({ where: { bookingId } });
+    if (!wf) {
+      wf = await prisma.serviceWorkflow.findFirst({
+        where: { serviceId: booking.serviceId, bookingId: null }
+      });
+    }
     if (!wf) return res.status(404).json({ message: 'Workflow not found' });
     
     // Update the steps array
@@ -112,19 +111,18 @@ exports.updateStep = async (req, res) => {
 // Helper function to update workflow step by name
 exports.updateWorkflowStepByName = async (bookingId: string, stepName: string, status: string, notes?: string) => {
   try {
-    // Get the booking to find the actual serviceId
     const booking = await prisma.booking.findUnique({
       where: { id: bookingId },
       select: { serviceId: true }
     });
-    
-    if (!booking) {
-      return null;
+    if (!booking) return null;
+    // Prefer workflow for this booking; fallback to service-level
+    let wf = await prisma.serviceWorkflow.findUnique({ where: { bookingId } });
+    if (!wf) {
+      wf = await prisma.serviceWorkflow.findFirst({
+        where: { serviceId: booking.serviceId, bookingId: null }
+      });
     }
-    
-    const wf = await prisma.serviceWorkflow.findFirst({ 
-      where: { serviceId: booking.serviceId } 
-    });
     if (!wf) return null;
     
     const steps = Array.isArray(wf.steps) ? wf.steps as any[] : [];

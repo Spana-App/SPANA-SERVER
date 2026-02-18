@@ -510,9 +510,12 @@ exports.createCheckoutSession = async (req, res) => {
       });
     }
 
-    if (booking.status !== 'pending_payment') {
+    // Allow payment when booking is awaiting payment (pending_payment) or pending with unpaid status
+    const canPay = booking.status === 'pending_payment' ||
+      (booking.status === 'pending' && (booking.paymentStatus === 'pending' || !booking.paymentStatus));
+    if (!canPay) {
       return res.status(400).json({
-        message: `Booking cannot be paid. Current status: ${booking.status}, paymentStatus: ${booking.paymentStatus}`,
+        message: `Booking cannot be paid. Current status: ${booking.status}, paymentStatus: ${booking.paymentStatus || 'none'}`,
         bookingStatus: booking.status,
         paymentStatus: booking.paymentStatus
       });
@@ -526,6 +529,14 @@ exports.createCheckoutSession = async (req, res) => {
 
     const totalAmount = baseAmount; // no tip for Checkout flow (can extend later)
     const amountCents = Math.round(totalAmount * 100);
+    // Stripe minimum for ZAR is 100 cents (R1.00)
+    if (amountCents < 100) {
+      return res.status(400).json({
+        message: 'Booking amount is below Stripe minimum (R1.00)',
+        amount: totalAmount,
+        amountCents
+      });
+    }
     const commissionRate = 0.15;
     const commissionAmount = baseAmount * commissionRate;
     const escrowAmount = totalAmount;
@@ -624,9 +635,12 @@ exports.createCheckoutSession = async (req, res) => {
     });
   } catch (error: any) {
     console.error('createCheckoutSession error', error);
+    const errMsg = error?.message || 'Unknown error';
+    const isStripeConfig = !stripeClient || errMsg.toLowerCase().includes('stripe') || errMsg.includes('api key');
     return res.status(500).json({
       message: 'Failed to create Stripe Checkout session',
-      error: error?.message || 'Unknown error'
+      error: errMsg,
+      ...(isStripeConfig && { hint: 'Check STRIPE_SECRET_KEY in server .env and that Stripe is configured for your account.' })
     });
   }
 };
@@ -1026,7 +1040,7 @@ exports.releaseFunds = async (req, res) => {
 // Legacy confirm payment (kept for backward compatibility, but redirects to PayFast)
 exports.confirmPayment = async (req, res) => {
   try {
-    const { paymentIntentId, bookingId, amount, paymentMethod } = req.body;
+    const { paymentIntentId, sessionId, bookingId, amount, paymentMethod } = req.body;
 
     if (!bookingId) {
       return res.status(400).json({ message: 'bookingId is required' });
@@ -1034,9 +1048,24 @@ exports.confirmPayment = async (req, res) => {
 
     // Stripe confirm (preferred): verify PaymentIntent succeeded and update booking/payment.
     // This is important when webhooks aren't configured.
-    if (stripeClient && paymentIntentId) {
+    // If sessionId is provided, retrieve PaymentIntent from Checkout Session
+    let actualPaymentIntentId = paymentIntentId;
+    if (stripeClient && sessionId && !paymentIntentId) {
       try {
-        const pi = await stripeClient.paymentIntents.retrieve(paymentIntentId);
+        const session = await stripeClient.checkout.sessions.retrieve(sessionId);
+        actualPaymentIntentId = session.payment_intent || session.payment_intent || null;
+        if (!actualPaymentIntentId) {
+          return res.status(400).json({ message: 'PaymentIntent not found in Checkout Session' });
+        }
+      } catch (sessionErr: any) {
+        console.error('Error retrieving Checkout Session:', sessionErr);
+        return res.status(400).json({ message: 'Invalid Checkout Session', error: sessionErr?.message });
+      }
+    }
+
+    if (stripeClient && actualPaymentIntentId) {
+      try {
+        const pi = await stripeClient.paymentIntents.retrieve(actualPaymentIntentId);
         if (!pi) {
           return res.status(404).json({ message: 'PaymentIntent not found' });
         }
@@ -1099,8 +1128,8 @@ exports.confirmPayment = async (req, res) => {
               where: { 
                 bookingId, 
                 OR: [
-                  { transactionId: paymentIntentId },
-                  { transactionId: { contains: paymentIntentId } }
+                  { transactionId: actualPaymentIntentId },
+                  { transactionId: { contains: actualPaymentIntentId } }
                 ]
               },
               orderBy: { createdAt: 'desc' }
@@ -1142,7 +1171,7 @@ exports.confirmPayment = async (req, res) => {
             data: { 
               status: 'paid', 
               escrowStatus: 'held', 
-              transactionId: paymentIntentId,
+              transactionId: actualPaymentIntentId,
               amount: totalAmount // Update amount in case it differs
             }
           });
@@ -1167,7 +1196,7 @@ exports.confirmPayment = async (req, res) => {
               currency: 'ZAR',
               paymentMethod: paymentMethod || 'stripe',
               status: 'paid',
-              transactionId: paymentIntentId,
+              transactionId: actualPaymentIntentId,
               escrowStatus: 'held',
               commissionRate,
               commissionAmount,
@@ -1207,10 +1236,12 @@ exports.confirmPayment = async (req, res) => {
           }
         } catch (_) {}
 
-        // Update workflow: Payment Received
+        // Update workflow: Payment Required, Payment Received, Provider Assigned (same as webhook/fallback)
         try {
           const workflowController = require('../controllers/serviceWorkflowController');
+          await workflowController.updateWorkflowStepByName(bookingId, 'Payment Required', 'completed', 'Payment received');
           await workflowController.updateWorkflowStepByName(bookingId, 'Payment Received', 'completed', 'Payment received (Stripe confirm)');
+          await workflowController.updateWorkflowStepByName(bookingId, 'Provider Assigned', 'pending', 'Waiting for provider acceptance');
         } catch (_) {}
 
         return res.json({ message: 'Payment confirmed', payment });
@@ -1628,6 +1659,7 @@ exports.webhookHandler = async (req: any, res: any) => {
         const workflowController = require('../controllers/serviceWorkflowController');
         await workflowController.updateWorkflowStepByName(bookingId, 'Payment Required', 'completed', 'Payment received');
         await workflowController.updateWorkflowStepByName(bookingId, 'Payment Received', 'completed', 'Payment received (Stripe)');
+        await workflowController.updateWorkflowStepByName(bookingId, 'Provider Assigned', 'pending', 'Waiting for provider acceptance');
       } catch (_) {}
 
       try {
