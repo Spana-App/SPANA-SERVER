@@ -517,6 +517,16 @@ app.use('/chat', chatRoutes);
 app.use('/provider', providerRoutes);
 app.use('/', require('./routes/registration'));
 
+// Stripe Checkout redirect pages (no auth; user lands here after paying or cancelling)
+app.get('/payment-success', (req: any, res: any) => {
+  res.setHeader('Content-Type', 'text/html');
+  res.send(`<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Payment successful</title></head><body style="font-family:system-ui;max-width:360px;margin:60px auto;padding:24px;text-align:center;"><h1 style="color:#10b981;">Payment successful</h1><p>You can close this window and return to the app.</p></body></html>`);
+});
+app.get('/payment-cancelled', (req: any, res: any) => {
+  res.setHeader('Content-Type', 'text/html');
+  res.send(`<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Payment cancelled</title></head><body style="font-family:system-ui;max-width:360px;margin:60px auto;padding:24px;text-align:center;"><h1 style="color:#f59e0b;">Payment cancelled</h1><p>You can close this window and return to the app.</p></body></html>`);
+});
+
 // Health check endpoint with Redis status
 app.get('/health', async (req: any, res: any) => {
   let dbStatus = 'disconnected';

@@ -209,7 +209,10 @@ exports.createBooking = async (req: any, res: any) => {
 
     const bookingDateTime = new Date(date);
     const now = new Date();
-    if (bookingDateTime < now) {
+    // Allow 5 minute buffer for network latency and clock skew
+    const bufferMinutes = 5;
+    const minAllowedTime = new Date(now.getTime() - bufferMinutes * 60 * 1000);
+    if (bookingDateTime < minAllowedTime) {
       return res.status(400).json({ 
         message: 'Booking time cannot be in the past. Please select a current or future time for today.',
         receivedTime: bookingDateTime.toISOString(),
