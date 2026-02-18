@@ -108,11 +108,21 @@ export async function getNextSequence(type: 'booking' | 'payment' | 'user' | 'me
 
 /**
  * Generate reference with database sequence
+ * Falls back to timestamp-based if sequence fails to ensure uniqueness
  */
 export async function generateBookingReferenceAsync(): Promise<string> {
-  const counter = await getNextSequence('booking');
-  const padded = String(counter).padStart(6, '0');
-  return `SPANA-BK-${padded}`;
+  try {
+    const counter = await getNextSequence('booking');
+    const padded = String(counter).padStart(6, '0');
+    return `SPANA-BK-${padded}`;
+  } catch (error: any) {
+    // Fallback: Use timestamp + random to ensure uniqueness
+    console.warn('[generateBookingReferenceAsync] Sequence failed, using timestamp fallback:', error.message);
+    const timestamp = Date.now();
+    const random = Math.floor(Math.random() * 1000);
+    const fallback = String(timestamp).slice(-8) + String(random).padStart(3, '0');
+    return `SPANA-BK-${fallback}`;
+  }
 }
 
 export async function generatePaymentReferenceAsync(): Promise<string> {

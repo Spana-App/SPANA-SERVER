@@ -226,32 +226,76 @@ exports.createBooking = async (req: any, res: any) => {
       const calculatedPrice = selectedJobSize === 'custom' && customPrice 
         ? parseFloat(customPrice) 
         : basePrice * multiplier;
-      const referenceNumber = await generateBookingReferenceAsync();
-      const queuedBooking = await prisma.booking.create({
-        data: {
-          referenceNumber,
-          customerId: customer.id,
-          serviceId: service.id,
-          date: bookingDateTime,
-          time,
-          location: bookingLocation,
-          notes,
-          estimatedDurationMinutes: estimatedDurationMinutes || service.duration,
-          jobSize: selectedJobSize,
-          basePrice,
-          jobSizeMultiplier: multiplier,
-          calculatedPrice,
-          status: 'pending_payment',
-          requestStatus: 'pending',
-          paymentStatus: 'pending',
-          locationMultiplier: 1.0,
-          providerDistance: null,
-        },
-        include: {
-          service: { include: { provider: { include: { user: true } } } },
-          customer: { include: { user: true } },
-        },
-      });
+      
+      // Handle potential referenceNumber collisions for queued bookings
+      let queuedBooking: any = null;
+      const queuedMaxAttempts = 5;
+      
+      for (let attempt = 0; attempt < queuedMaxAttempts; attempt++) {
+        const referenceNumber = await generateBookingReferenceAsync();
+        
+        try {
+          queuedBooking = await prisma.booking.create({
+            data: {
+              referenceNumber,
+              customerId: customer.id,
+              serviceId: service.id,
+              date: bookingDateTime,
+              time,
+              location: bookingLocation,
+              notes,
+              estimatedDurationMinutes: estimatedDurationMinutes || service.duration,
+              jobSize: selectedJobSize,
+              basePrice,
+              jobSizeMultiplier: multiplier,
+              calculatedPrice,
+              status: 'pending_payment',
+              requestStatus: 'pending',
+              paymentStatus: 'pending',
+              locationMultiplier: 1.0,
+              providerDistance: null,
+            },
+            include: {
+              service: { include: { provider: { include: { user: true } } } },
+              customer: { include: { user: true } },
+            },
+          });
+          
+          console.log(`[createBooking] Successfully created queued booking with reference: ${referenceNumber}`);
+          break;
+        } catch (err: any) {
+          if (
+            err &&
+            err.code === 'P2002' &&
+            (Array.isArray(err.meta?.target)
+              ? err.meta.target.includes('referenceNumber')
+              : err.meta?.target === 'referenceNumber')
+          ) {
+            console.warn(
+              `[createBooking] Queued booking reference collision (${referenceNumber}), retrying... attempt ${
+                attempt + 1
+              }/${queuedMaxAttempts}`
+            );
+            queuedBooking = null;
+            // Add small delay to avoid rapid retries
+            if (attempt < queuedMaxAttempts - 1) {
+              await new Promise(resolve => setTimeout(resolve, 100));
+            }
+            continue;
+          }
+          
+          // Any other error: log and rethrow
+          console.error(`[createBooking] Error creating queued booking (attempt ${attempt + 1}/${queuedMaxAttempts}):`, err);
+          throw err;
+        }
+      }
+      
+      if (!queuedBooking) {
+        console.error('[createBooking] Failed to generate unique reference for queued booking');
+        return res.status(500).json({
+          message: 'Could not generate unique booking reference. Please try again.',
+        });
+      }
       try {
         const workflowClient = require('../lib/workflowClient');
         await workflowClient.createWorkflowForBooking(queuedBooking.id, [
@@ -331,6 +375,7 @@ exports.createBooking = async (req: any, res: any) => {
         });
 
         // Successfully created booking, exit retry loop
+        console.log(`[createBooking] Successfully created booking with reference: ${referenceNumber}`);
         break;
       } catch (err: any) {
         // Handle unique constraint collision on referenceNumber and retry with a new one
@@ -347,10 +392,15 @@ exports.createBooking = async (req: any, res: any) => {
             }/${maxAttempts}`
           );
           booking = null;
+          // Add small delay to avoid rapid retries
+          if (attempt < maxAttempts - 1) {
+            await new Promise(resolve => setTimeout(resolve, 100));
+          }
           continue;
         }
 
-        // Any other error: rethrow
+        // Any other error: log and rethrow
+        console.error(`[createBooking] Error creating booking (attempt ${attempt + 1}/${maxAttempts}):`, err);
         throw err;
       }
     }
@@ -424,9 +474,25 @@ exports.createBooking = async (req: any, res: any) => {
       amount: calculatedPrice,
       nextStep: 'payment'
     });
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ message: 'Server error' });
+  } catch (error: any) {
+    console.error('[createBooking] Top-level error:', error);
+    
+    // Provide more specific error messages
+    if (error?.code === 'P2002' && error?.meta?.target?.includes('referenceNumber')) {
+      console.error('[createBooking] Reference number collision - retry logic may have failed');
+      return res.status(500).json({ 
+        message: 'Could not generate unique booking reference. Please try again.',
+        error: 'reference_number_collision',
+        retry: true
+      });
+    }
+    
+    // Generic server error
+    res.status(500).json({ 
+      message: 'Server error',
+      error: error?.message || 'Unknown error',
+      code: error?.code || 'UNKNOWN'
+    });
   }
 };
 
