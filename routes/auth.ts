@@ -10,7 +10,7 @@ const registerValidation = [
   body('password').isLength({ min: 6 }),
   body('firstName').not().isEmpty().trim(),
   body('lastName').not().isEmpty().trim(),
-  body('phone').not().isEmpty()
+  body('phone').optional({ values: 'null' }).trim()
 ];
 
 const loginValidation = [

@@ -72,13 +72,13 @@ exports.register = async (req: any, res: any) => {
     // Hash password
     const hashedPassword = await bcrypt.hash(password, 12);
 
-    // Prepare user data
+    // Prepare user data (phone optional for registration)
     const userData: any = {
       email: email.toLowerCase(),
       password: hashedPassword,
       firstName: finalFirstName,
       lastName: lastName || '',
-      phone,
+      phone: (phone && String(phone).trim()) || null,
       role: finalRole,
       isEmailVerified: finalRole === 'admin' ? false : false // Admins need verification
     };

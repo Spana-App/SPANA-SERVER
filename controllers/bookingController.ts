@@ -182,31 +182,15 @@ exports.createBooking = async (req: any, res: any) => {
       });
     }
 
-    // If no provider match found, queue the request
-    if (!providerMatch) {
-      return res.status(201).json({
-        message: 'No providers available at this time. Your request has been queued.',
-        queued: true,
-        estimatedWaitTime: '5-15 minutes',
-        nextStep: 'wait_for_provider'
-      });
-    }
-
-    // Job size calculation
+    // Job size calculation (used for both matched and queued)
     const jobSizeMultipliers: any = {
       small: 1.0,
       medium: 1.5,
       large: 2.0,
       custom: 1.0
     };
-
-    // Use location-adjusted price from provider matching
-    const basePrice = providerMatch.adjustedPrice || service.price;
     const selectedJobSize = jobSize || 'medium';
     const multiplier = jobSizeMultipliers[selectedJobSize] || 1.0;
-    const calculatedPrice = selectedJobSize === 'custom' && customPrice 
-      ? parseFloat(customPrice) 
-      : basePrice * multiplier;
 
     // Validate date - must be same day (immediate service like Uber)
     const bookingDate = new Date(date);
@@ -215,7 +199,6 @@ exports.createBooking = async (req: any, res: any) => {
     const bookingDateOnly = new Date(bookingDate);
     bookingDateOnly.setHours(0, 0, 0, 0); // Start of booking date
     
-    // Check if booking date is today
     if (bookingDateOnly.getTime() !== today.getTime()) {
       return res.status(400).json({ 
         message: 'Bookings must be for today only. All services are immediate attention like Uber - no future bookings allowed.',
@@ -224,7 +207,6 @@ exports.createBooking = async (req: any, res: any) => {
       });
     }
 
-    // Check if booking time is in the past (for today's bookings)
     const bookingDateTime = new Date(date);
     const now = new Date();
     if (bookingDateTime < now) {
@@ -234,6 +216,71 @@ exports.createBooking = async (req: any, res: any) => {
         currentTime: now.toISOString()
       });
     }
+
+    // If no provider match found, create a queued booking (still create record so user can pay and see it in list)
+    if (!providerMatch) {
+      const basePrice = service.price;
+      const calculatedPrice = selectedJobSize === 'custom' && customPrice 
+        ? parseFloat(customPrice) 
+        : basePrice * multiplier;
+      const referenceNumber = await generateBookingReferenceAsync();
+      const queuedBooking = await prisma.booking.create({
+        data: {
+          referenceNumber,
+          customerId: customer.id,
+          serviceId: service.id,
+          date: bookingDateTime,
+          time,
+          location: bookingLocation,
+          notes,
+          estimatedDurationMinutes: estimatedDurationMinutes || service.duration,
+          jobSize: selectedJobSize,
+          basePrice,
+          jobSizeMultiplier: multiplier,
+          calculatedPrice,
+          status: 'pending_payment',
+          requestStatus: 'pending',
+          paymentStatus: 'pending',
+          locationMultiplier: 1.0,
+          providerDistance: null,
+        },
+        include: {
+          service: { include: { provider: { include: { user: true } } } },
+          customer: { include: { user: true } },
+        },
+      });
+      try {
+        const workflowClient = require('../lib/workflowClient');
+        await workflowClient.createWorkflowForBooking(queuedBooking.id, [
+          { name: 'Booking Request Created', status: 'completed' },
+          { name: 'Provider Assigned', status: 'pending' },
+          { name: 'Payment Received', status: 'pending' },
+          { name: 'Provider En Route', status: 'pending' },
+          { name: 'Service In Progress', status: 'pending' },
+          { name: 'Service Completed', status: 'pending' },
+        ]).catch(() => {});
+      } catch (_) {}
+      let responseBooking = queuedBooking;
+      if (req.user.role === 'customer' && (queuedBooking.service as any).provider) {
+        const { provider, ...serviceWithoutProvider } = (queuedBooking.service as any);
+        responseBooking = { ...queuedBooking, service: serviceWithoutProvider } as any;
+      }
+      return res.status(201).json({
+        message: 'No providers available at this time. Your request has been queued. Please pay to confirm and we will find a provider for you.',
+        queued: true,
+        estimatedWaitTime: '5-15 minutes',
+        nextStep: 'payment',
+        booking: responseBooking,
+        paymentRequired: true,
+        amount: calculatedPrice,
+      });
+    }
+
+    // Use location-adjusted price from provider matching
+    const basePrice = providerMatch.adjustedPrice || service.price;
+    const calculatedPrice = selectedJobSize === 'custom' && customPrice 
+      ? parseFloat(customPrice) 
+      : basePrice * multiplier;
 
     // Create booking request - Customer must pay first before provider allocation
     // Status: pending_payment (waiting for payment)
